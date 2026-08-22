@@ -180,7 +180,7 @@ export default function Home() {
             onClick={copyMint}
             aria-label={copied ? "Copied" : "Copy token address"}
             title={copied ? "Copied" : "Copy token address"}
-            className="flex h-6 w-6 items-center justify-center rounded-md text-white/35 transition-colors hover:bg-white/[0.06] hover:text-white/70 active:scale-95"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-white/35 transition-colors hover:text-white/70 active:scale-95"
           >
             {copied ? <CheckIcon /> : <CopyIcon />}
           </button>
