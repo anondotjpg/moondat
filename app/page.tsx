@@ -1,23 +1,40 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
-  useMemo,
   useState,
 } from "react";
+
 import MoonScene from "./components/MoonScene";
+import VerifyHolderModal from "./components/VerifyHolderModal";
 
 type Holder = {
   address: string;
   balance: number;
+
+  verified?: boolean;
+
+  message?:
+    | string
+    | null;
+
+  verifiedAt?:
+    | string
+    | null;
 };
 
 type HoldersResponse = {
   mint: string;
+
   minimumBalance: number;
+
   maxDisplayedHolders: number;
+
   holders: Holder[];
+
   holderCount: number;
+
   displayedBalance: number;
 
   excludedLiquidityPool: {
@@ -26,12 +43,14 @@ type HoldersResponse = {
   } | null;
 
   totalWalletCount?: number;
+
   qualifyingHolderCount?: number;
+
   updatedAt?: string;
 };
 
 const TOKEN_MINT =
-  "XXXXXXXXXXXXXXX";
+  "461C1ngHZtzTvMWT8gL7C2JLaYg2VQvaYj8aDFqhEni1";
 
 const REFRESH_INTERVAL_MS =
   60_000;
@@ -40,7 +59,8 @@ function abbreviateMint(
   address: string
 ) {
   if (
-    address.length < 10
+    address.length <
+    10
   ) {
     return address;
   }
@@ -129,154 +149,112 @@ export default function Home() {
     useState(false);
 
   const [
-    updatedAt,
-    setUpdatedAt,
+    verifyOpen,
+    setVerifyOpen,
   ] =
-    useState<
-      string | null
-    >(null);
+    useState(false);
+
+  const loadHolders =
+    useCallback(
+      async (
+        initial =
+          false
+      ) => {
+        try {
+          if (
+            initial
+          ) {
+            setLoading(
+              true
+            );
+          }
+
+          const response =
+            await fetch(
+              "/api/holders",
+              {
+                cache:
+                  "no-store",
+              }
+            );
+
+          if (
+            !response.ok
+          ) {
+            const body =
+              await response
+                .json()
+                .catch(
+                  () =>
+                    null
+                );
+
+            throw new Error(
+              body?.error ||
+                `Unable to load holders (${response.status})`
+            );
+          }
+
+          const data =
+            (await response.json()) as HoldersResponse;
+
+          setHolders(
+            (
+              data.holders ??
+              []
+            ).slice(
+              0,
+              100
+            )
+          );
+
+          setDisplayedBalance(
+            typeof data.displayedBalance ===
+              "number"
+              ? data.displayedBalance
+              : 0
+          );
+
+          setError(
+            null
+          );
+        } catch (err) {
+          const message =
+            err instanceof
+            Error
+              ? err.message
+              : "Unable to load holders.";
+
+          if (
+            initial
+          ) {
+            setError(
+              message
+            );
+          } else {
+            console.error(
+              "[holders-refresh]",
+              err
+            );
+          }
+        } finally {
+          if (
+            initial
+          ) {
+            setLoading(
+              false
+            );
+          }
+        }
+      },
+      []
+    );
 
   useEffect(() => {
-    let cancelled =
-      false;
-
-    async function loadHolders(
-      initial = false
-    ) {
-      try {
-        if (initial) {
-          setLoading(
-            true
-          );
-        }
-
-        /*
-         * Don't blank the existing moon during
-         * background refreshes.
-         */
-        if (initial) {
-          setError(null);
-        }
-
-        const response =
-          await fetch(
-            "/api/holders",
-            {
-              cache:
-                "no-store",
-            }
-          );
-
-        if (
-          !response.ok
-        ) {
-          const body =
-            await response
-              .json()
-              .catch(
-                () =>
-                  null
-              );
-
-          throw new Error(
-            body?.error ||
-              `Unable to load holders (${response.status})`
-          );
-        }
-
-        const data =
-          (await response.json()) as HoldersResponse;
-
-        if (
-          cancelled
-        ) {
-          return;
-        }
-
-        setHolders(
-          (
-            data.holders ??
-            []
-          ).slice(
-            0,
-            100
-          )
-        );
-
-        setDisplayedBalance(
-          typeof data.displayedBalance ===
-            "number"
-            ? data.displayedBalance
-            : 0
-        );
-
-        setUpdatedAt(
-          data.updatedAt ??
-            null
-        );
-
-        /*
-         * Clear an old error after a successful
-         * refresh.
-         */
-        setError(null);
-      } catch (err) {
-        if (
-          cancelled
-        ) {
-          return;
-        }
-
-        const message =
-          err instanceof
-          Error
-            ? err.message
-            : "Unable to load holders.";
-
-        /*
-         * If we already have holder data,
-         * preserve the moon during a temporary
-         * refresh failure.
-         */
-        if (
-          initial ||
-          holders.length ===
-            0
-        ) {
-          setError(
-            message
-          );
-        } else {
-          console.error(
-            "[holders-refresh]",
-            err
-          );
-        }
-      } finally {
-        if (
-          initial &&
-          !cancelled
-        ) {
-          setLoading(
-            false
-          );
-        }
-      }
-    }
-
-    /*
-     * Immediate snapshot read.
-     */
     void loadHolders(
       true
     );
 
-    /*
-     * Refresh stored snapshot from Supabase
-     * every 60 seconds.
-     *
-     * This route does NOT call Helius.
-     */
     const interval =
       window.setInterval(
         () => {
@@ -288,37 +266,13 @@ export default function Home() {
       );
 
     return () => {
-      cancelled =
-        true;
-
       window.clearInterval(
         interval
       );
     };
-  }, []);
-
-  const visibleBalance =
-    useMemo(() => {
-      if (
-        displayedBalance >
-        0
-      ) {
-        return displayedBalance;
-      }
-
-      return holders.reduce(
-        (
-          total,
-          holder
-        ) =>
-          total +
-          holder.balance,
-        0
-      );
-    }, [
-      displayedBalance,
-      holders,
-    ]);
+  }, [
+    loadHolders,
+  ]);
 
   async function copyMint() {
     try {
@@ -348,7 +302,6 @@ export default function Home() {
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-black text-white">
-      {/* 3D moon */}
       <div className="absolute inset-0">
         <MoonScene
           holders={
@@ -363,7 +316,6 @@ export default function Home() {
           moondat.lol
         </span>
 
-        {/* Mint */}
         <div className="pointer-events-auto mt-1.5 flex items-center gap-1.5 sm:mt-2">
           <span className="text-[10px] text-white/35 sm:text-xs">
             {abbreviateMint(
@@ -381,11 +333,6 @@ export default function Home() {
                 ? "Copied"
                 : "Copy token address"
             }
-            title={
-              copied
-                ? "Copied"
-                : "Copy token address"
-            }
             className="flex h-6 w-6 items-center justify-center rounded-md text-white/35 transition-colors hover:bg-white/[0.06] hover:text-white/70 active:scale-95"
           >
             {copied ? (
@@ -395,6 +342,18 @@ export default function Home() {
             )}
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            setVerifyOpen(
+              true
+            );
+          }}
+          className="pointer-events-auto mt-2 text-[10px] text-white/35 transition hover:text-white/70 sm:text-xs"
+        >
+          verify holder
+        </button>
       </div>
 
       {/* Top right */}
@@ -421,8 +380,7 @@ export default function Home() {
             <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
 
             <span className="whitespace-nowrap text-xs text-white/50">
-              Loading
-              holder
+              Loading holder
               snapshot...
             </span>
           </div>
@@ -455,6 +413,26 @@ export default function Home() {
             </div>
           </div>
         )}
+
+      <VerifyHolderModal
+        open={
+          verifyOpen
+        }
+        onClose={() => {
+          setVerifyOpen(
+            false
+          );
+        }}
+        onVerified={async () => {
+          /*
+           * Immediately pull the new verified
+           * message instead of waiting 60 sec.
+           */
+          await loadHolders(
+            false
+          );
+        }}
+      />
     </main>
   );
 }
