@@ -1,52 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHelius } from "helius-sdk";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/* -------------------------------------------------------------------------- */
+/*                                   CONFIG                                   */
+/* -------------------------------------------------------------------------- */
+
 const MIN_HOLDINGS = 100_000;
 const MAX_DISPLAYED_HOLDERS = 100;
-const PAGE_LIMIT = 1000;
 
-const DAS_REQUEST_INTERVAL_MS = 700;
+const PAGE_SIZE = 1000;
+
+/*
+ * Helius can rate-limit DAS calls.
+ * Keep pagination comfortably spaced.
+ */
+const PAGE_DELAY_MS = 650;
+
 const MAX_RETRIES = 5;
-const CACHE_TTL_MS = 60_000;
 
-type HeliusTokenAccount = {
-  address: string;
-  mint: string;
-  owner: string;
-  amount: number | string;
-  delegated_amount?: number;
-  frozen?: boolean;
-};
+/*
+ * Don't rescan the entire mint every refresh.
+ */
+const CACHE_TIME_MS = 60_000;
 
-type TokenAccountsResponse = {
-  result?: {
-    total?: number;
-    limit?: number;
-    page?: number;
-    token_accounts?: HeliusTokenAccount[];
-  };
-  error?: {
-    code?: number;
-    message?: string;
-  };
-};
-
-type TokenSupplyResponse = {
-  result?: {
-    value?: {
-      amount: string;
-      decimals: number;
-      uiAmount: number | null;
-      uiAmountString: string;
-    };
-  };
-  error?: {
-    code?: number;
-    message?: string;
-  };
-};
+/* -------------------------------------------------------------------------- */
+/*                                    TYPES                                   */
+/* -------------------------------------------------------------------------- */
 
 type Holder = {
   address: string;
@@ -55,16 +37,21 @@ type Holder = {
 
 type HolderResponse = {
   mint: string;
+
   minimumBalance: number;
   maxDisplayedHolders: number;
+
   holders: Holder[];
   holderCount: number;
+
   displayedBalance: number;
 
-  excludedLiquidityPool: {
-    address: string;
-    balance: number;
-  } | null;
+  excludedLiquidityPool: Holder | null;
+
+  totalWalletCount: number;
+  qualifyingHolderCount: number;
+
+  updatedAt: string;
 };
 
 type CacheEntry = {
@@ -72,23 +59,39 @@ type CacheEntry = {
   data: HolderResponse;
 };
 
+/* -------------------------------------------------------------------------- */
+/*                              GLOBAL DEV CACHE                              */
+/* -------------------------------------------------------------------------- */
+
 const globalStore = globalThis as typeof globalThis & {
-  __holderMoonCache?: Map<string, CacheEntry>;
-  __holderMoonInFlight?: Map<string, Promise<HolderResponse>>;
-  __holderMoonLastDasRequest?: number;
+  __moonHolderCache?: Map<string, CacheEntry>;
+
+  __moonHolderInFlight?: Map<
+    string,
+    Promise<HolderResponse>
+  >;
 };
 
 const holderCache =
-  globalStore.__holderMoonCache ??
+  globalStore.__moonHolderCache ??
   new Map<string, CacheEntry>();
 
-globalStore.__holderMoonCache = holderCache;
+globalStore.__moonHolderCache =
+  holderCache;
 
-const inFlightRequests =
-  globalStore.__holderMoonInFlight ??
-  new Map<string, Promise<HolderResponse>>();
+const inFlight =
+  globalStore.__moonHolderInFlight ??
+  new Map<
+    string,
+    Promise<HolderResponse>
+  >();
 
-globalStore.__holderMoonInFlight = inFlightRequests;
+globalStore.__moonHolderInFlight =
+  inFlight;
+
+/* -------------------------------------------------------------------------- */
+/*                                  HELPERS                                   */
+/* -------------------------------------------------------------------------- */
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => {
@@ -96,269 +99,220 @@ function sleep(ms: number) {
   });
 }
 
-function isValidMint(value: string) {
+function isValidSolanaAddress(value: string) {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 }
 
-async function waitForDasSlot() {
-  const now = Date.now();
-
-  const lastRequest =
-    globalStore.__holderMoonLastDasRequest ?? 0;
-
-  const elapsed = now - lastRequest;
-
-  if (elapsed < DAS_REQUEST_INTERVAL_MS) {
-    await sleep(DAS_REQUEST_INTERVAL_MS - elapsed);
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
   }
 
-  globalStore.__holderMoonLastDasRequest = Date.now();
+  return String(error);
 }
 
-function getRetryDelay(
-  response: Response,
-  attempt: number
-) {
-  const retryAfter = response.headers.get("retry-after");
+function isRateLimitError(error: unknown) {
+  const message =
+    getErrorMessage(error).toLowerCase();
 
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-
-    if (
-      Number.isFinite(seconds) &&
-      seconds > 0
-    ) {
-      return seconds * 1000;
-    }
-  }
-
-  const exponential = Math.min(
-    1000 * 2 ** attempt,
-    30_000
+  return (
+    message.includes("429") ||
+    message.includes("rate limit") ||
+    message.includes("too many requests")
   );
-
-  return exponential + Math.random() * 300;
 }
 
-async function heliusRpc<T>(
-  url: string,
-  body: Record<string, unknown>,
-  options?: {
-    das?: boolean;
+/* -------------------------------------------------------------------------- */
+/*                          HELIUS PAGE WITH RETRIES                          */
+/* -------------------------------------------------------------------------- */
+
+async function getTokenAccountsPage(
+  helius: ReturnType<typeof createHelius>,
+  params: {
+    mint: string;
+    limit: number;
+    cursor?: string;
   }
-): Promise<T> {
-  let lastError: Error | null = null;
+) {
+  let lastError: unknown;
 
   for (
     let attempt = 0;
     attempt <= MAX_RETRIES;
     attempt++
   ) {
-    if (options?.das) {
-      await waitForDasSlot();
-    }
-
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+      return await helius.getTokenAccounts({
+        mint: params.mint,
+
+        limit: params.limit,
+
+        ...(params.cursor
+          ? {
+              cursor: params.cursor,
+            }
+          : {}),
+
+        options: {
+          showZeroBalance: false,
         },
-        body: JSON.stringify(body),
-        cache: "no-store",
       });
-
-      if (response.status === 429) {
-        const delay = getRetryDelay(
-          response,
-          attempt
-        );
-
-        console.warn(
-          `[holders] Helius 429 — retry ${
-            attempt + 1
-          }/${MAX_RETRIES} in ${Math.round(delay)}ms`
-        );
-
-        if (attempt >= MAX_RETRIES) {
-          throw new Error(
-            "Helius is currently rate limiting holder requests."
-          );
-        }
-
-        await sleep(delay);
-
-        continue;
-      }
-
-      if (
-        response.status === 502 ||
-        response.status === 503 ||
-        response.status === 504
-      ) {
-        const delay = getRetryDelay(
-          response,
-          attempt
-        );
-
-        if (attempt >= MAX_RETRIES) {
-          throw new Error(
-            `Helius temporarily unavailable (${response.status}).`
-          );
-        }
-
-        await sleep(delay);
-
-        continue;
-      }
-
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-
-        throw new Error(
-          `Helius request failed with ${response.status}${
-            text ? `: ${text.slice(0, 300)}` : ""
-          }`
-        );
-      }
-
-      return (await response.json()) as T;
     } catch (error) {
-      lastError =
-        error instanceof Error
-          ? error
-          : new Error("Unknown Helius error");
+      lastError = error;
 
-      throw lastError;
+      if (!isRateLimitError(error)) {
+        throw error;
+      }
+
+      if (attempt >= MAX_RETRIES) {
+        throw error;
+      }
+
+      const delay = Math.min(
+        1000 * 2 ** attempt,
+        15_000
+      );
+
+      console.warn(
+        `[holders] Helius rate limit — retrying in ${delay}ms`
+      );
+
+      await sleep(delay);
     }
   }
 
-  throw (
-    lastError ??
-    new Error("Unable to complete Helius request.")
-  );
+  throw lastError;
 }
 
-async function scanHolders(
-  mint: string,
-  apiKey: string
-): Promise<HolderResponse> {
-  const rpcUrl =
-    `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
+/* -------------------------------------------------------------------------- */
+/*                           FETCH TOKEN ACCOUNTS                             */
+/* -------------------------------------------------------------------------- */
 
-  const supply =
-    await heliusRpc<TokenSupplyResponse>(
-      rpcUrl,
-      {
-        jsonrpc: "2.0",
-        id: "holder-moon-supply",
-        method: "getTokenSupply",
-        params: [mint],
-      }
-    );
+async function fetchAllTokenAccounts(
+  helius: ReturnType<typeof createHelius>,
+  mint: string
+) {
+  const accounts: Array<{
+    owner?: string;
+    amount?: number;
+  }> = [];
 
-  if (supply.error) {
-    throw new Error(
-      supply.error.message ??
-        "Unable to read token supply."
-    );
-  }
-
-  const decimals =
-    supply.result?.value?.decimals;
-
-  if (
-    decimals === undefined ||
-    decimals === null
-  ) {
-    throw new Error(
-      "Unable to determine token decimals."
-    );
-  }
-
-  const divisor = 10 ** decimals;
+  let cursor: string | undefined;
+  let page = 1;
 
   /*
-   * Combine multiple token accounts belonging to
-   * the same actual wallet.
+   * Prevent a malformed/repeated cursor from producing
+   * an infinite loop.
    */
-  const balances =
-    new Map<string, number>();
-
-  let page = 1;
-  let rawTokenAccounts = 0;
+  const seenCursors =
+    new Set<string>();
 
   while (true) {
+    if (page > 1) {
+      await sleep(
+        PAGE_DELAY_MS
+      );
+    }
+
     console.log(
-      `[holders] Fetching page ${page} for ${mint}`
+      `[holders] Fetching Helius page ${page}`
     );
 
-    const data =
-      await heliusRpc<TokenAccountsResponse>(
-        rpcUrl,
+    const response =
+      await getTokenAccountsPage(
+        helius,
         {
-          jsonrpc: "2.0",
-          id: `holder-moon-${page}`,
-          method: "getTokenAccounts",
-          params: {
-            mint,
-            page,
-            limit: PAGE_LIMIT,
-            displayOptions: {},
-          },
-        },
-        {
-          das: true,
+          mint,
+          limit:
+            PAGE_SIZE,
+          cursor,
         }
       );
 
-    if (data.error) {
-      throw new Error(
-        data.error.message ??
-          "Unable to retrieve token accounts."
-      );
+    const batch =
+      response.token_accounts ??
+      [];
+
+    console.log(
+      `[holders] Page ${page}: ${batch.length} accounts`
+    );
+
+    for (const account of batch) {
+      accounts.push({
+        owner:
+          account.owner,
+
+        /*
+         * IMPORTANT:
+         *
+         * Current Helius DAS/SDK response gives us
+         * the token amount here.
+         *
+         * Do NOT divide by 10 ** decimals again.
+         */
+        amount:
+          account.amount,
+      });
     }
 
-    const accounts =
-      data.result?.token_accounts ?? [];
-
-    if (accounts.length === 0) {
-      break;
-    }
-
-    rawTokenAccounts += accounts.length;
-
-    for (const account of accounts) {
-      if (!account.owner) {
-        continue;
-      }
-
-      const rawAmount =
-        Number(account.amount);
-
-      if (
-        !Number.isFinite(rawAmount) ||
-        rawAmount <= 0
-      ) {
-        continue;
-      }
-
-      const tokenAmount =
-        rawAmount / divisor;
-
-      balances.set(
-        account.owner,
-        (balances.get(account.owner) ?? 0) +
-          tokenAmount
-      );
-    }
-
+    /*
+     * Helius may provide total.
+     */
     if (
-      accounts.length <
-      PAGE_LIMIT
+      typeof response.total ===
+        "number" &&
+      accounts.length >=
+        response.total
     ) {
       break;
     }
+
+    /*
+     * A short response means we're done.
+     */
+    if (
+      batch.length <
+      PAGE_SIZE
+    ) {
+      break;
+    }
+
+    const nextCursor =
+      response.cursor;
+
+    if (!nextCursor) {
+      /*
+       * No cursor and full page.
+       *
+       * Current Helius supports cursor pagination,
+       * but stop safely rather than accidentally
+       * requesting the first page forever.
+       */
+      console.warn(
+        "[holders] Full page returned without a cursor. Ending pagination."
+      );
+
+      break;
+    }
+
+    if (
+      seenCursors.has(
+        nextCursor
+      )
+    ) {
+      console.warn(
+        "[holders] Repeated Helius cursor. Ending pagination."
+      );
+
+      break;
+    }
+
+    seenCursors.add(
+      nextCursor
+    );
+
+    cursor =
+      nextCursor;
 
     page += 1;
 
@@ -369,24 +323,102 @@ async function scanHolders(
     }
   }
 
+  return accounts;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                SCAN HOLDERS                                */
+/* -------------------------------------------------------------------------- */
+
+async function scanHolders(
+  mint: string,
+  apiKey: string
+): Promise<HolderResponse> {
   /*
-   * 1. Only wallets above 100k.
-   * 2. Largest first.
+   * CURRENT helius-sdk syntax.
    */
-  const qualifyingHolders =
+  const helius =
+    createHelius({
+      apiKey,
+    });
+
+  const tokenAccounts =
+    await fetchAllTokenAccounts(
+      helius,
+      mint
+    );
+
+  console.log(
+    `[holders] Fetched ${tokenAccounts.length} token accounts`
+  );
+
+  /*
+   * Multiple SPL token accounts can belong to
+   * the same wallet.
+   *
+   * Aggregate them by owner.
+   */
+  const walletBalances =
+    new Map<
+      string,
+      number
+    >();
+
+  for (
+    const account of tokenAccounts
+  ) {
+    const owner =
+      account.owner?.trim();
+
+    const amount =
+      Number(
+        account.amount ??
+          0
+      );
+
+    if (!owner) {
+      continue;
+    }
+
+    if (
+      !Number.isFinite(
+        amount
+      ) ||
+      amount <= 0
+    ) {
+      continue;
+    }
+
+    walletBalances.set(
+      owner,
+
+      (
+        walletBalances.get(
+          owner
+        ) ?? 0
+      ) + amount
+    );
+  }
+
+  /*
+   * Largest wallet first.
+   */
+  const allHolders =
     Array.from(
-      balances.entries()
+      walletBalances.entries()
     )
       .map(
-        ([address, balance]) => ({
+        ([
+          address,
+          balance,
+        ]) => ({
           address,
           balance,
         })
       )
       .filter(
         (holder) =>
-          holder.balance >
-          MIN_HOLDINGS
+          holder.balance > 0
       )
       .sort(
         (a, b) =>
@@ -394,52 +426,102 @@ async function scanHolders(
           a.balance
       );
 
+  console.log(
+    `[holders] ${allHolders.length} unique holder wallets`
+  );
+
   /*
-   * Largest holder is treated as LP and removed.
+   * Per your requirement:
+   *
+   * absolute #1 wallet is treated as the LP
+   * and excluded from the moon.
    */
   const excludedLiquidityPool =
-    qualifyingHolders[0] ??
+    allHolders[0] ??
     null;
 
   /*
    * Remove LP FIRST.
-   *
-   * Then take only the 100 largest real wallets.
+   */
+  const withoutLiquidityPool =
+    allHolders.slice(1);
+
+  /*
+   * Now apply the minimum balance.
+   */
+  const qualifyingHolders =
+    withoutLiquidityPool.filter(
+      (holder) =>
+        holder.balance >
+        MIN_HOLDINGS
+    );
+
+  /*
+   * Then take only the top 100.
    */
   const holders =
-    qualifyingHolders
-      .slice(1)
-      .slice(
-        0,
-        MAX_DISPLAYED_HOLDERS
-      );
+    qualifyingHolders.slice(
+      0,
+      MAX_DISPLAYED_HOLDERS
+    );
 
+  /*
+   * MoonScene uses holder balances to calculate
+   * each top-100 holder's proportional share.
+   */
   const displayedBalance =
     holders.reduce(
-      (sum, holder) =>
-        sum +
+      (
+        total,
+        holder
+      ) =>
+        total +
         holder.balance,
       0
     );
 
   console.log(
-    `[holders] ${rawTokenAccounts} token accounts → ` +
-      `${balances.size} wallets → ` +
-      `${qualifyingHolders.length} above 100k → ` +
-      `${holders.length} displayed`
+    `[holders] ${qualifyingHolders.length} non-LP wallets above ${MIN_HOLDINGS.toLocaleString()}`
+  );
+
+  console.log(
+    `[holders] Displaying top ${holders.length}`
   );
 
   if (
     excludedLiquidityPool
   ) {
     console.log(
-      `[holders] Excluded LP: ${excludedLiquidityPool.address} — ` +
-        `${excludedLiquidityPool.balance.toLocaleString()} tokens`
+      `[holders] Excluded LP: ${excludedLiquidityPool.address} — ${excludedLiquidityPool.balance.toLocaleString()} tokens`
     );
   }
 
+  /*
+   * Print top 10 so we can immediately sanity-check
+   * the returned balances.
+   */
+  console.log(
+    "[holders] Top displayed holders:"
+  );
+
+  holders
+    .slice(0, 10)
+    .forEach(
+      (
+        holder,
+        index
+      ) => {
+        console.log(
+          `#${index + 1}`,
+          holder.address,
+          holder.balance.toLocaleString()
+        );
+      }
+    );
+
   return {
     mint,
+
     minimumBalance:
       MIN_HOLDINGS,
 
@@ -454,8 +536,21 @@ async function scanHolders(
     displayedBalance,
 
     excludedLiquidityPool,
+
+    totalWalletCount:
+      allHolders.length,
+
+    qualifyingHolderCount:
+      qualifyingHolders.length,
+
+    updatedAt:
+      new Date().toISOString(),
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/*                              CACHE + DEDUPE                                */
+/* -------------------------------------------------------------------------- */
 
 async function getHolderData(
   mint: string,
@@ -470,19 +565,25 @@ async function getHolderData(
       Date.now()
   ) {
     console.log(
-      `[holders] Using cached data for ${mint}`
+      "[holders] Using cached result"
     );
 
     return cached.data;
   }
 
-  const existingRequest =
-    inFlightRequests.get(
-      mint
+  /*
+   * Stops Next dev mode / simultaneous browser requests
+   * from launching two complete Helius scans.
+   */
+  const existing =
+    inFlight.get(mint);
+
+  if (existing) {
+    console.log(
+      "[holders] Joining active scan"
     );
 
-  if (existingRequest) {
-    return existingRequest;
+    return existing;
   }
 
   const request =
@@ -491,7 +592,7 @@ async function getHolderData(
       apiKey
     );
 
-  inFlightRequests.set(
+  inFlight.set(
     mint,
     request
   );
@@ -504,19 +605,24 @@ async function getHolderData(
       mint,
       {
         data,
+
         expiresAt:
           Date.now() +
-          CACHE_TTL_MS,
+          CACHE_TIME_MS,
       }
     );
 
     return data;
   } finally {
-    inFlightRequests.delete(
+    inFlight.delete(
       mint
     );
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/*                                    ROUTE                                   */
+/* -------------------------------------------------------------------------- */
 
 export async function GET(
   request: NextRequest
@@ -525,16 +631,19 @@ export async function GET(
     const mint =
       request.nextUrl.searchParams
         .get("mint")
-        ?.trim() ?? "";
+        ?.trim() ??
+      "";
 
     if (
       !mint ||
-      !isValidMint(mint)
+      !isValidSolanaAddress(
+        mint
+      )
     ) {
       return NextResponse.json(
         {
           error:
-            "A valid Solana token mint is required.",
+            "Invalid Solana mint address.",
         },
         {
           status: 400,
@@ -543,13 +652,15 @@ export async function GET(
     }
 
     const apiKey =
-      process.env.HELIUS_API_KEY;
+      process.env
+        .HELIUS_API_KEY
+        ?.trim();
 
     if (!apiKey) {
       return NextResponse.json(
         {
           error:
-            "HELIUS_API_KEY is not configured. Add it to .env.local.",
+            "HELIUS_API_KEY is missing from .env.local.",
         },
         {
           status: 500,
@@ -563,20 +674,18 @@ export async function GET(
         apiKey
       );
 
-    const response =
-      NextResponse.json(
-        data
-      );
-
-    response.headers.set(
-      "Cache-Control",
-      "public, s-maxage=60, stale-while-revalidate=120"
+    return NextResponse.json(
+      data,
+      {
+        headers: {
+          "Cache-Control":
+            "public, s-maxage=60, stale-while-revalidate=120",
+        },
+      }
     );
-
-    return response;
   } catch (error) {
     console.error(
-      "Holder API error:",
+      "[holders] API error:",
       error
     );
 

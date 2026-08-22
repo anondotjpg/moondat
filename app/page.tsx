@@ -21,7 +21,7 @@ type HoldersResponse = {
   } | null;
 };
 
-const TOKEN_MINT = "9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump";
+const TOKEN_MINT = "461C1ngHZtzTvMWT8gL7C2JLaYg2VQvaYj8aDFqhEni1";
 
 function abbreviateMint(address: string) {
   if (address.length < 10) {
@@ -132,16 +132,11 @@ export default function Home() {
       {/* Top left */}
       <div className="pointer-events-none absolute left-4 top-4 z-10 sm:left-8 sm:top-8">
         <div className="flex items-center gap-2">
-          <div className="h-1.5 w-1.5 rounded-full bg-white/80" />
 
-          <span className="text-[10px] font-medium uppercase tracking-[0.22em] text-white/45 sm:text-[11px]">
-            Holder Moon
+          <span className="text-xl font-medium text-white sm:text-2xl">
+            moondat.lol
           </span>
         </div>
-
-        <h1 className="mt-2 text-xl font-medium tracking-tight text-white sm:mt-3 sm:text-2xl">
-          Top 100 holders
-        </h1>
 
         <div className="mt-1.5 font-mono text-[10px] text-white/35 sm:mt-2 sm:text-xs">
           {abbreviateMint(TOKEN_MINT)}
@@ -180,19 +175,6 @@ export default function Home() {
           <p className="text-sm text-white/65">
             {error}
           </p>
-        </div>
-      )}
-
-      {/* Bottom left stats */}
-      {!loading && !error && holders.length > 0 && (
-        <div className="pointer-events-none absolute bottom-4 left-4 z-10 sm:bottom-8 sm:left-8">
-          <div className="text-[9px] uppercase tracking-[0.16em] text-white/25 sm:text-[10px]">
-            Top 100 holdings
-          </div>
-
-          <div className="mt-1 font-mono text-[11px] tabular-nums text-white/55 sm:text-xs">
-            {formatTokenAmount(visibleBalance)} tokens
-          </div>
         </div>
       )}
 
