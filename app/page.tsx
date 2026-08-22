@@ -313,7 +313,7 @@ export default function Home() {
       {/* Top left */}
       <div className="pointer-events-none absolute left-4 top-4 z-10 sm:left-8 sm:top-8">
         <span className="text-xl font-medium text-white sm:text-2xl">
-          moondat.lol
+          kingthehill.lol
         </span>
 
         <div className="pointer-events-auto mt-1.5 flex items-center gap-1.5 sm:mt-2">
@@ -367,7 +367,6 @@ export default function Home() {
             </div>
 
             <div className="mt-1 text-[9px] uppercase tracking-[0.16em] text-white/30 sm:text-[10px]">
-              displayed
               holders
             </div>
           </div>
@@ -394,23 +393,6 @@ export default function Home() {
             <p className="text-sm text-white/65">
               {error}
             </p>
-          </div>
-        )}
-
-      {/* Bottom right */}
-      {!loading &&
-        !error &&
-        holders.length >
-          0 && (
-          <div className="pointer-events-none absolute bottom-4 right-4 z-10 text-right sm:bottom-8 sm:right-8">
-            <div className="text-[9px] uppercase tracking-[0.16em] text-white/25 sm:text-[10px]">
-              Surface area
-            </div>
-
-            <div className="mt-1 text-[10px] text-white/40 sm:text-xs">
-              Proportional
-              to holdings
-            </div>
           </div>
         )}
 

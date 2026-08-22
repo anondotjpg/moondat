@@ -8,8 +8,8 @@ const pixelifySans = Pixelify_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "moondat",
-  description: "send anything to the moon!",
+  title: "king of the hill",
+  description: "become the king of the hill",
 };
 
 export default function RootLayout({

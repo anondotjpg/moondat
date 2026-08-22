@@ -9,12 +9,13 @@ import {
 } from "react";
 import {
   Canvas,
+  ThreeEvent,
   useFrame,
   useThree,
 } from "@react-three/fiber";
 import {
   Html,
-  Stars,
+  Sparkles,
 } from "@react-three/drei";
 import * as THREE from "three";
 
@@ -33,18 +34,66 @@ type MoonSceneProps = {
 
 type Territory = {
   holder: Holder;
-  share: number;
 
+  rank: number;
+  share: number;
+  ring: number;
+
+  /*
+   * Angular position.
+   *
+   * Can intentionally go above 1 because
+   * the mapping wraps naturally around 2π.
+   */
   u0: number;
   u1: number;
 
-  s0: number;
-  s1: number;
+  /*
+   * Normalized cumulative REAL hill
+   * surface area from summit -> base.
+   *
+   * 0 = summit
+   * 1 = bottom edge
+   */
+  a0: number;
+  a1: number;
 };
 
-const MOON_RADIUS = 2;
-const LABEL_RADIUS = 2.025;
-const TOOLTIP_RADIUS = 2.13;
+/* -------------------------------------------------------------------------- */
+/*                                  CONFIG                                    */
+/* -------------------------------------------------------------------------- */
+
+const HILL_RADIUS = 5.15;
+const HILL_HEIGHT = 3.05;
+const HILL_BASE_Y = -2.5;
+
+const PATCH_LIFT = 0.014;
+const BORDER_LIFT = 0.031;
+const LABEL_LIFT = 0.048;
+const TOOLTIP_LIFT = 0.22;
+
+const PUMP_GREEN = "#55f58a";
+const PUMP_GREEN_BRIGHT = "#adffc4";
+const PUMP_GREEN_DARK = "#153c24";
+const PUMP_GREEN_DEEP = "#06130a";
+
+/*
+ * 99 holders below #1.
+ *
+ * Each row becomes one clean concentric
+ * band around the hill.
+ *
+ * 4 + 6 + 9 + 12 + 16 + 22 + 30 = 99
+ */
+const RING_COUNTS = [
+  4,
+  6,
+  9,
+  12,
+  16,
+  22,
+  30,
+];
 
 /* -------------------------------------------------------------------------- */
 /*                                  HELPERS                                   */
@@ -64,24 +113,15 @@ function clamp(
   );
 }
 
-function seededRandom(
-  seed: number
-) {
-  const x =
-    Math.sin(
-      seed * 9999.91
-    ) *
-    43758.5453;
-
-  return (
-    x -
-    Math.floor(x)
-  );
-}
-
 function abbreviateAddress(
   address: string
 ) {
+  if (
+    address.length < 10
+  ) {
+    return address;
+  }
+
   return `${address.slice(
     0,
     4
@@ -127,691 +167,523 @@ function formatTokenAmount(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                             8-BIT MOON TEXTURE                             */
+/*                              ACTUAL HILL                                   */
 /* -------------------------------------------------------------------------- */
 
-const MOON_PALETTE = {
-  darkest: "#4d4d4d",
-  dark: "#636363",
-  midDark: "#777777",
-  mid: "#929292",
-  light: "#ababab",
-  brightest: "#c4c4c4",
+/*
+ * This is a real smooth mound profile.
+ *
+ * Not a sphere / hemisphere.
+ *
+ * smoothstep gives:
+ *
+ * - flat rounded summit
+ * - natural shoulder
+ * - smooth broad slope
+ * - slope approaches zero at the base
+ *
+ *
+ * side silhouette:
+ *
+ *                  ______
+ *              ___/      \___
+ *           __/              \__
+ *        __/                    \__
+ * _____/                          \_____
+ */
+function hillHeightAtRadius(
+  radius: number
+) {
+  const t =
+    clamp(
+      radius /
+        HILL_RADIUS,
+      0,
+      1
+    );
+
+  const smooth =
+    t *
+    t *
+    (
+      3 -
+      2 * t
+    );
+
+  return (
+    HILL_BASE_Y +
+    HILL_HEIGHT *
+      (
+        1 -
+        smooth
+      )
+  );
+}
+
+/*
+ * derivative of:
+ *
+ * H * (1 - 3t² + 2t³)
+ */
+function hillDerivative(
+  radius: number
+) {
+  const t =
+    clamp(
+      radius /
+        HILL_RADIUS,
+      0,
+      1
+    );
+
+  return (
+    HILL_HEIGHT *
+    (
+      -6 * t +
+      6 * t * t
+    ) /
+    HILL_RADIUS
+  );
+}
+
+function hillNormal(
+  radius: number,
+  angle: number
+) {
+  const derivative =
+    hillDerivative(
+      radius
+    );
+
+  return new THREE.Vector3(
+    -derivative *
+      Math.sin(
+        angle
+      ),
+
+    1,
+
+    -derivative *
+      Math.cos(
+        angle
+      )
+  ).normalize();
+}
+
+/* -------------------------------------------------------------------------- */
+/*                        REAL SURFACE AREA MAPPING                           */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * For a radial surface:
+ *
+ * dA = 2π r sqrt(1 + y'(r)^2) dr
+ *
+ * We numerically integrate it once.
+ *
+ * This is important:
+ *
+ * A holder with 5% ownership gets
+ * EXACTLY 5% of the hill's curved
+ * surface area.
+ */
+
+const AREA_STEPS = 1800;
+
+type AreaLookupItem = {
+  radius: number;
+  fraction: number;
 };
 
-function drawPixelCrater(
-  ctx: CanvasRenderingContext2D,
-  centerX: number,
-  centerY: number,
-  radius: number,
-  seed: number,
-  canvasWidth: number
-) {
-  const minX =
-    Math.floor(
-      centerX -
-        radius -
-        1
-    );
+function buildAreaLookup() {
+  const raw: Array<{
+    radius: number;
+    area: number;
+  }> = [];
 
-  const maxX =
-    Math.ceil(
-      centerX +
-        radius +
-        1
-    );
+  let cumulative =
+    0;
 
-  const minY =
-    Math.floor(
-      centerY -
-        radius -
-        1
-    );
+  let previousIntegrand =
+    0;
 
-  const maxY =
-    Math.ceil(
-      centerY +
-        radius +
-        1
-    );
+  raw.push({
+    radius: 0,
+    area: 0,
+  });
 
   for (
-    let y = minY;
-    y <= maxY;
-    y++
+    let index = 1;
+    index <=
+    AREA_STEPS;
+    index++
   ) {
-    for (
-      let x = minX;
-      x <= maxX;
-      x++
-    ) {
-      const wrappedX =
-        ((x %
-          canvasWidth) +
-          canvasWidth) %
-        canvasWidth;
+    const radius =
+      (
+        index /
+        AREA_STEPS
+      ) *
+      HILL_RADIUS;
 
-      const dx =
-        x -
-        centerX;
+    const derivative =
+      hillDerivative(
+        radius
+      );
 
-      const dy =
-        y -
-        centerY;
-
-      const angle =
-        Math.atan2(
-          dy,
-          dx
-        );
-
-      const irregularity =
+    const integrand =
+      radius *
+      Math.sqrt(
         1 +
-        Math.sin(
-          angle * 5 +
-            seed
-        ) *
-          0.05 +
-        Math.sin(
-          angle * 9 +
-            seed * 0.7
-        ) *
-          0.025;
-
-      const distance =
-        Math.sqrt(
-          dx * dx +
-            dy * dy
-        ) /
-        (
-          radius *
-          irregularity
-        );
-
-      if (
-        distance >
-        1
-      ) {
-        continue;
-      }
-
-      /*
-       * Crater center.
-       */
-      if (
-        distance <
-        0.52
-      ) {
-        const noise =
-          seededRandom(
-            seed *
-              1000 +
-              x * 19 +
-              y * 31
-          );
-
-        ctx.fillStyle =
-          noise > 0.78
-            ? MOON_PALETTE.dark
-            : MOON_PALETTE.darkest;
-
-        ctx.fillRect(
-          wrappedX,
-          y,
-          1,
-          1
-        );
-
-        continue;
-      }
-
-      /*
-       * Inner wall.
-       */
-      if (
-        distance <
-        0.7
-      ) {
-        ctx.fillStyle =
-          MOON_PALETTE.dark;
-
-        ctx.fillRect(
-          wrappedX,
-          y,
-          1,
-          1
-        );
-
-        continue;
-      }
-
-      /*
-       * Pixel rim.
-       */
-      const lightDirection =
-        -dx - dy;
-
-      if (
-        distance <
-        0.9
-      ) {
-        ctx.fillStyle =
-          lightDirection >
-          0
-            ? MOON_PALETTE.brightest
-            : MOON_PALETTE.midDark;
-
-        ctx.fillRect(
-          wrappedX,
-          y,
-          1,
-          1
-        );
-
-        continue;
-      }
-
-      ctx.fillStyle =
-        lightDirection >
-        0
-          ? MOON_PALETTE.light
-          : MOON_PALETTE.dark;
-
-      ctx.fillRect(
-        wrappedX,
-        y,
-        1,
-        1
+          derivative *
+            derivative
       );
-    }
+
+    const previousRadius =
+      (
+        (
+          index -
+          1
+        ) /
+        AREA_STEPS
+      ) *
+      HILL_RADIUS;
+
+    const dr =
+      radius -
+      previousRadius;
+
+    cumulative +=
+      (
+        previousIntegrand +
+        integrand
+      ) *
+      0.5 *
+      dr;
+
+    raw.push({
+      radius,
+      area:
+        cumulative,
+    });
+
+    previousIntegrand =
+      integrand;
   }
+
+  const total =
+    cumulative;
+
+  return raw.map(
+    (
+      item
+    ): AreaLookupItem => ({
+      radius:
+        item.radius,
+
+      fraction:
+        total > 0
+          ? item.area /
+            total
+          : 0,
+    })
+  );
 }
 
-function drawPixelMaria(
-  ctx: CanvasRenderingContext2D,
-  centerX: number,
-  centerY: number,
-  radiusX: number,
-  radiusY: number,
-  seed: number,
-  canvasWidth: number
+const AREA_LOOKUP =
+  buildAreaLookup();
+
+function areaFractionToRadius(
+  areaFraction: number
 ) {
-  const minX =
-    Math.floor(
-      centerX -
-        radiusX
+  const target =
+    clamp(
+      areaFraction,
+      0,
+      1
     );
 
-  const maxX =
-    Math.ceil(
-      centerX +
-        radiusX
-    );
-
-  const minY =
-    Math.floor(
-      centerY -
-        radiusY
-    );
-
-  const maxY =
-    Math.ceil(
-      centerY +
-        radiusY
-    );
-
-  for (
-    let y = minY;
-    y <= maxY;
-    y++
-  ) {
-    for (
-      let x = minX;
-      x <= maxX;
-      x++
-    ) {
-      const dx =
-        (
-          x -
-          centerX
-        ) /
-        radiusX;
-
-      const dy =
-        (
-          y -
-          centerY
-        ) /
-        radiusY;
-
-      const distortion =
-        Math.sin(
-          x * 0.31 +
-            seed
-        ) *
-          0.07 +
-        Math.cos(
-          y * 0.37 +
-            seed
-        ) *
-          0.07;
-
-      const distance =
-        dx * dx +
-        dy * dy +
-        distortion;
-
-      if (
-        distance >
-        1
-      ) {
-        continue;
-      }
-
-      const wrappedX =
-        ((x %
-          canvasWidth) +
-          canvasWidth) %
-        canvasWidth;
-
-      const noise =
-        seededRandom(
-          seed *
-            700 +
-            x * 11 +
-            y * 23
-        );
-
-      if (
-        noise <
-        0.3
-      ) {
-        continue;
-      }
-
-      ctx.fillStyle =
-        noise > 0.82
-          ? MOON_PALETTE.midDark
-          : MOON_PALETTE.dark;
-
-      ctx.fillRect(
-        wrappedX,
-        y,
-        1,
-        1
-      );
-    }
-  }
-}
-
-function createMoonTexture(
-  mobile: boolean
-) {
   if (
-    typeof document ===
-    "undefined"
+    target <= 0
   ) {
-    return null;
+    return 0;
   }
+
+  if (
+    target >= 1
+  ) {
+    return HILL_RADIUS;
+  }
+
+  let low =
+    0;
+
+  let high =
+    AREA_LOOKUP.length -
+    1;
+
+  while (
+    low <= high
+  ) {
+    const middle =
+      Math.floor(
+        (
+          low +
+          high
+        ) /
+          2
+      );
+
+    if (
+      AREA_LOOKUP[
+        middle
+      ].fraction <
+      target
+    ) {
+      low =
+        middle +
+        1;
+    } else {
+      high =
+        middle -
+        1;
+    }
+  }
+
+  const upperIndex =
+    clamp(
+      low,
+      1,
+      AREA_LOOKUP.length -
+        1
+    );
+
+  const lowerIndex =
+    upperIndex -
+    1;
+
+  const lower =
+    AREA_LOOKUP[
+      lowerIndex
+    ];
+
+  const upper =
+    AREA_LOOKUP[
+      upperIndex
+    ];
+
+  const range =
+    upper.fraction -
+    lower.fraction;
+
+  const t =
+    range > 0
+      ? (
+          target -
+          lower.fraction
+        ) /
+        range
+      : 0;
+
+  return THREE.MathUtils.lerp(
+    lower.radius,
+    upper.radius,
+    t
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                           SURFACE POSITION                                 */
+/* -------------------------------------------------------------------------- */
+
+function hillSurfacePosition(
+  u: number,
+  area: number,
+  lift = 0
+) {
+  const angle =
+    (
+      u -
+      0.5
+    ) *
+    Math.PI *
+    2;
+
+  const radius =
+    areaFractionToRadius(
+      area
+    );
+
+  const point =
+    new THREE.Vector3(
+      radius *
+        Math.sin(
+          angle
+        ),
+
+      hillHeightAtRadius(
+        radius
+      ),
+
+      radius *
+        Math.cos(
+          angle
+        )
+    );
+
+  if (
+    lift !== 0
+  ) {
+    point.addScaledVector(
+      hillNormal(
+        radius,
+        angle
+      ),
+      lift
+    );
+  }
+
+  return point;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            TANGENT FRAME                                   */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Builds a local coordinate frame directly
+ * against the hill.
+ *
+ * X = across the hill
+ * Y = uphill
+ * Z = outward normal
+ *
+ * This is what makes the address text lie
+ * FLAT against the terrain instead of
+ * floating / billboard-facing the camera.
+ */
+function hillSurfaceQuaternion(
+  u: number,
+  area: number
+) {
+  const angle =
+    (
+      u -
+      0.5
+    ) *
+    Math.PI *
+    2;
+
+  const radius =
+    areaFractionToRadius(
+      area
+    );
+
+  const derivative =
+    hillDerivative(
+      radius
+    );
+
+  const right =
+    new THREE.Vector3(
+      Math.cos(
+        angle
+      ),
+      0,
+      -Math.sin(
+        angle
+      )
+    ).normalize();
 
   /*
-   * Deliberately low resolution.
-   *
-   * NearestFilter stretches these actual pixels
-   * across the sphere without smoothing them.
+   * Negative radial tangent =
+   * direction pointing uphill.
    */
-  const width =
-    mobile
-      ? 192
-      : 256;
+  const uphill =
+    new THREE.Vector3(
+      -Math.sin(
+        angle
+      ),
 
-  const height =
-    mobile
-      ? 96
-      : 128;
+      -derivative,
 
-  const canvas =
-    document.createElement(
-      "canvas"
-    );
+      -Math.cos(
+        angle
+      )
+    ).normalize();
 
-  canvas.width =
-    width;
+  const normal =
+    right
+      .clone()
+      .cross(
+        uphill
+      )
+      .normalize();
 
-  canvas.height =
-    height;
+  const matrix =
+    new THREE.Matrix4();
 
-  const ctx =
-    canvas.getContext(
-      "2d"
-    );
-
-  if (!ctx) {
-    return null;
-  }
-
-  ctx.imageSmoothingEnabled =
-    false;
-
-  /* Base */
-
-  ctx.fillStyle =
-    MOON_PALETTE.mid;
-
-  ctx.fillRect(
-    0,
-    0,
-    width,
-    height
+  matrix.makeBasis(
+    right,
+    uphill,
+    normal
   );
 
-  /* Pixel grain */
-
-  const grainPalette = [
-    MOON_PALETTE.midDark,
-    MOON_PALETTE.mid,
-    MOON_PALETTE.mid,
-    MOON_PALETTE.mid,
-    MOON_PALETTE.light,
-  ];
-
-  for (
-    let y = 0;
-    y < height;
-    y += 2
-  ) {
-    for (
-      let x = 0;
-      x < width;
-      x += 2
-    ) {
-      const noise =
-        seededRandom(
-          x * 97 +
-            y * 131 +
-            14
-        );
-
-      const index =
-        Math.floor(
-          noise *
-            grainPalette.length
-        );
-
-      ctx.fillStyle =
-        grainPalette[
-          Math.min(
-            grainPalette.length -
-              1,
-            index
-          )
-        ];
-
-      ctx.fillRect(
-        x,
-        y,
-        2,
-        2
-      );
-    }
-  }
-
-  /* Dark lunar regions */
-
-  for (
-    let i = 0;
-    i < 14;
-    i++
-  ) {
-    const centerX =
-      Math.floor(
-        seededRandom(
-          i * 13 +
-            2
-        ) *
-          width
-      );
-
-    const centerY =
-      Math.floor(
-        seededRandom(
-          i * 17 +
-            5
-        ) *
-          height
-      );
-
-    const radiusX =
-      8 +
-      Math.floor(
-        seededRandom(
-          i * 23 +
-            7
-        ) *
-          22
-      );
-
-    const radiusY =
-      5 +
-      Math.floor(
-        seededRandom(
-          i * 29 +
-            11
-        ) *
-          13
-      );
-
-    drawPixelMaria(
-      ctx,
-      centerX,
-      centerY,
-      radiusX,
-      radiusY,
-      i + 10,
-      width
+  return new THREE.Quaternion()
+    .setFromRotationMatrix(
+      matrix
     );
-  }
-
-  /* Large craters */
-
-  const largeCraterCount =
-    mobile
-      ? 10
-      : 15;
-
-  for (
-    let i = 0;
-    i <
-    largeCraterCount;
-    i++
-  ) {
-    const x =
-      Math.floor(
-        seededRandom(
-          i * 41 +
-            8
-        ) *
-          width
-      );
-
-    const y =
-      Math.floor(
-        height *
-          0.12 +
-          seededRandom(
-            i * 43 +
-              10
-          ) *
-            height *
-            0.76
-      );
-
-    const radius =
-      4 +
-      Math.floor(
-        seededRandom(
-          i * 47 +
-            13
-        ) *
-          7
-      );
-
-    drawPixelCrater(
-      ctx,
-      x,
-      y,
-      radius,
-      i + 300,
-      width
-    );
-  }
-
-  /* Medium craters */
-
-  const mediumCraterCount =
-    mobile
-      ? 28
-      : 42;
-
-  for (
-    let i = 0;
-    i <
-    mediumCraterCount;
-    i++
-  ) {
-    const x =
-      Math.floor(
-        seededRandom(
-          i * 53 +
-            17
-        ) *
-          width
-      );
-
-    const y =
-      Math.floor(
-        seededRandom(
-          i * 59 +
-            19
-        ) *
-          height
-      );
-
-    const radius =
-      2 +
-      Math.floor(
-        seededRandom(
-          i * 61 +
-            23
-        ) *
-          3
-      );
-
-    drawPixelCrater(
-      ctx,
-      x,
-      y,
-      radius,
-      i + 700,
-      width
-    );
-  }
-
-  /* Tiny craters */
-
-  const tinyCraterCount =
-    mobile
-      ? 70
-      : 110;
-
-  for (
-    let i = 0;
-    i <
-    tinyCraterCount;
-    i++
-  ) {
-    const x =
-      Math.floor(
-        seededRandom(
-          i * 67 +
-            31
-        ) *
-          width
-      );
-
-    const y =
-      Math.floor(
-        seededRandom(
-          i * 71 +
-            37
-        ) *
-          height
-      );
-
-    const radius =
-      seededRandom(
-        i * 73 +
-          41
-      ) >
-      0.75
-        ? 2
-        : 1;
-
-    drawPixelCrater(
-      ctx,
-      x,
-      y,
-      radius,
-      i + 1100,
-      width
-    );
-  }
-
-  const texture =
-    new THREE.CanvasTexture(
-      canvas
-    );
-
-  texture.colorSpace =
-    THREE.SRGBColorSpace;
-
-  texture.wrapS =
-    THREE.RepeatWrapping;
-
-  texture.wrapT =
-    THREE.ClampToEdgeWrapping;
-
-  texture.magFilter =
-    THREE.NearestFilter;
-
-  texture.minFilter =
-    THREE.NearestFilter;
-
-  texture.generateMipmaps =
-    false;
-
-  texture.needsUpdate =
-    true;
-
-  return texture;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                       PROPORTIONAL HOLDER TREEMAP                          */
+/*                         CLEAN SURFACE DIVISION                             */
 /* -------------------------------------------------------------------------- */
 
-function buildTreemap(
+/*
+ * Instead of recursive random rectangles,
+ * the hill is now divided like a clean
+ * topographical / land-ownership map.
+ *
+ *
+ *           [ #1 summit cap ]
+ *
+ *       [ #2 ][ #3 ][ #4 ][ #5 ]
+ *
+ *     [        next clean ring        ]
+ *
+ *   [             next ring             ]
+ *
+ * [                 base ring               ]
+ *
+ *
+ * Every ring receives exactly the combined
+ * surface-area share of its holders.
+ *
+ * Within that ring, angular width is
+ * proportional to each holder balance.
+ *
+ * Therefore:
+ *
+ * ring area × angular share
+ *
+ * = exact holder surface area.
+ */
+function buildTerritories(
   holders: Holder[]
 ): Territory[] {
   const sorted =
     [...holders]
       .filter(
-        (holder) =>
+        (
+          holder
+        ) =>
           holder.balance >
           0
       )
       .sort(
-        (a, b) =>
+        (
+          a,
+          b
+        ) =>
           b.balance -
           a.balance
       )
@@ -819,6 +691,12 @@ function buildTreemap(
         0,
         100
       );
+
+  if (
+    sorted.length === 0
+  ) {
+    return [];
+  }
 
   const total =
     sorted.reduce(
@@ -832,32 +710,101 @@ function buildTreemap(
     );
 
   if (
-    sorted.length ===
-      0 ||
     total <= 0
   ) {
     return [];
   }
 
-  const result:
+  const territories:
     Territory[] = [];
 
-  function recurse(
-    items: Holder[],
-    u0: number,
-    u1: number,
-    s0: number,
-    s1: number
+  /* ---------------------------------------------------------------------- */
+  /* King                                                                   */
+  /* ---------------------------------------------------------------------- */
+
+  const king =
+    sorted[0];
+
+  const kingShare =
+    king.balance /
+    total;
+
+  /*
+   * #1 gets a true circular summit.
+   */
+  territories.push({
+    holder:
+      king,
+
+    rank:
+      1,
+
+    share:
+      kingShare,
+
+    ring:
+      0,
+
+    u0:
+      0,
+
+    u1:
+      1,
+
+    a0:
+      0,
+
+    a1:
+      kingShare,
+  });
+
+  let holderCursor =
+    1;
+
+  let areaCursor =
+    kingShare;
+
+  /* ---------------------------------------------------------------------- */
+  /* Rings                                                                  */
+  /* ---------------------------------------------------------------------- */
+
+  for (
+    let ringIndex = 0;
+    ringIndex <
+    RING_COUNTS.length;
+    ringIndex++
   ) {
     if (
-      items.length ===
+      holderCursor >=
+      sorted.length
+    ) {
+      break;
+    }
+
+    const desiredCount =
+      RING_COUNTS[
+        ringIndex
+      ];
+
+    const ringHolders =
+      sorted.slice(
+        holderCursor,
+        Math.min(
+          holderCursor +
+            desiredCount,
+          sorted.length
+        )
+      );
+
+    if (
+      ringHolders.length ===
       0
     ) {
-      return;
+      break;
     }
 
-    const groupTotal =
-      items.reduce(
+    const ringBalance =
+      ringHolders.reduce(
         (
           sum,
           holder
@@ -867,83 +814,109 @@ function buildTreemap(
         0
       );
 
-    if (
-      items.length ===
-      1
-    ) {
-      result.push({
-        holder:
-          items[0],
+    const ringShare =
+      ringBalance /
+      total;
 
-        share:
-          items[0]
-            .balance /
-          total,
+    const ringA0 =
+      areaCursor;
 
-        u0,
-        u1,
-        s0,
-        s1,
-      });
+    const ringA1 =
+      Math.min(
+        1,
+        areaCursor +
+          ringShare
+      );
 
-      return;
-    }
-
-    const half =
-      groupTotal /
-      2;
-
-    let running =
-      0;
-
-    let splitIndex =
+    /*
+     * Stagger every ring so boundaries
+     * don't line up into ugly vertical
+     * longitude seams.
+     */
+    const angularOffset =
+      (
+        0.08 +
+        ringIndex *
+          0.137
+      ) %
       1;
 
-    let closest =
-      Number.POSITIVE_INFINITY;
+    let angularCursor =
+      angularOffset;
 
     for (
-      let i = 1;
-      i <
-      items.length;
-      i++
+      let localIndex = 0;
+      localIndex <
+      ringHolders.length;
+      localIndex++
     ) {
-      running +=
-        items[
-          i - 1
-        ].balance;
+      const holder =
+        ringHolders[
+          localIndex
+        ];
 
-      const distance =
-        Math.abs(
-          running -
-            half
-        );
+      const angularShare =
+        ringBalance > 0
+          ? holder.balance /
+            ringBalance
+          : 0;
 
-      if (
-        distance <
-        closest
-      ) {
-        closest =
-          distance;
+      territories.push({
+        holder,
 
-        splitIndex =
-          i;
-      }
+        rank:
+          holderCursor +
+          localIndex +
+          1,
+
+        share:
+          holder.balance /
+          total,
+
+        ring:
+          ringIndex +
+          1,
+
+        u0:
+          angularCursor,
+
+        u1:
+          angularCursor +
+          angularShare,
+
+        a0:
+          ringA0,
+
+        a1:
+          ringA1,
+      });
+
+      angularCursor +=
+        angularShare;
     }
 
-    const first =
-      items.slice(
-        0,
-        splitIndex
+    holderCursor +=
+      ringHolders.length;
+
+    areaCursor =
+      ringA1;
+  }
+
+  /*
+   * Safety fallback in case holder count
+   * ever exceeds the current ring plan.
+   */
+  if (
+    holderCursor <
+    sorted.length
+  ) {
+    const leftovers =
+      sorted.slice(
+        holderCursor
       );
 
-    const second =
-      items.slice(
-        splitIndex
-      );
-
-    const firstTotal =
-      first.reduce(
+    const leftoverBalance =
+      leftovers.reduce(
         (
           sum,
           holder
@@ -953,256 +926,756 @@ function buildTreemap(
         0
       );
 
-    const ratio =
-      firstTotal /
-      groupTotal;
+    let u =
+      0.11;
 
-    const physicalWidth =
+    leftovers.forEach(
       (
-        u1 -
-        u0
-      ) *
-      Math.PI *
-      2;
+        holder,
+        index
+      ) => {
+        const angularShare =
+          holder.balance /
+          leftoverBalance;
 
-    const physicalHeight =
+        territories.push({
+          holder,
+
+          rank:
+            holderCursor +
+            index +
+            1,
+
+          share:
+            holder.balance /
+            total,
+
+          ring:
+            8,
+
+          u0:
+            u,
+
+          u1:
+            u +
+            angularShare,
+
+          a0:
+            areaCursor,
+
+          a1:
+            1,
+        });
+
+        u +=
+          angularShare;
+      }
+    );
+  }
+
+  return territories;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              HILL GEOMETRY                                 */
+/* -------------------------------------------------------------------------- */
+
+function createHillGeometry() {
+  const radialSegments =
+    100;
+
+  const angularSegments =
+    200;
+
+  const positions:
+    number[] = [];
+
+  const normals:
+    number[] = [];
+
+  const indices:
+    number[] = [];
+
+  for (
+    let radial = 0;
+    radial <=
+    radialSegments;
+    radial++
+  ) {
+    const radius =
       (
-        s1 -
-        s0
+        radial /
+        radialSegments
       ) *
-      2;
+      HILL_RADIUS;
 
-    if (
-      physicalWidth >=
-      physicalHeight
+    for (
+      let angular = 0;
+      angular <=
+      angularSegments;
+      angular++
     ) {
-      const cut =
-        u0 +
+      const u =
+        angular /
+        angularSegments;
+
+      const angle =
         (
-          u1 -
-          u0
+          u -
+          0.5
         ) *
-          ratio;
+        Math.PI *
+        2;
 
-      recurse(
-        first,
-        u0,
-        cut,
-        s0,
-        s1
+      const normal =
+        hillNormal(
+          radius,
+          angle
+        );
+
+      positions.push(
+        radius *
+          Math.sin(
+            angle
+          ),
+
+        hillHeightAtRadius(
+          radius
+        ),
+
+        radius *
+          Math.cos(
+            angle
+          )
       );
 
-      recurse(
-        second,
-        cut,
-        u1,
-        s0,
-        s1
-      );
-    } else {
-      const cut =
-        s0 +
-        (
-          s1 -
-          s0
-        ) *
-          ratio;
-
-      recurse(
-        first,
-        u0,
-        u1,
-        s0,
-        cut
-      );
-
-      recurse(
-        second,
-        u0,
-        u1,
-        cut,
-        s1
+      normals.push(
+        normal.x,
+        normal.y,
+        normal.z
       );
     }
   }
 
-  recurse(
-    sorted,
-    0,
-    1,
-    0,
-    1
+  for (
+    let radial = 0;
+    radial <
+    radialSegments;
+    radial++
+  ) {
+    for (
+      let angular = 0;
+      angular <
+      angularSegments;
+      angular++
+    ) {
+      const a =
+        radial *
+          (
+            angularSegments +
+            1
+          ) +
+        angular;
+
+      const b =
+        a + 1;
+
+      const c =
+        a +
+        (
+          angularSegments +
+          1
+        );
+
+      const d =
+        c + 1;
+
+      indices.push(
+        a,
+        c,
+        b,
+
+        b,
+        c,
+        d
+      );
+    }
+  }
+
+  const geometry =
+    new THREE.BufferGeometry();
+
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      positions,
+      3
+    )
   );
 
-  return result;
+  geometry.setAttribute(
+    "normal",
+    new THREE.Float32BufferAttribute(
+      normals,
+      3
+    )
+  );
+
+  geometry.setIndex(
+    indices
+  );
+
+  geometry.computeBoundingSphere();
+
+  return geometry;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                          SPHERE POSITION HELPERS                           */
+/*                          TERRITORY GEOMETRY                                */
 /* -------------------------------------------------------------------------- */
 
-function equalAreaToLatitude(
-  s: number
+function createTerritoryGeometry(
+  territory: Territory
 ) {
-  const sinLatitude =
-    clamp(
-      s * 2 -
-        1,
-      -1,
-      1
+  const uRange =
+    territory.u1 -
+    territory.u0;
+
+  const aRange =
+    territory.a1 -
+    territory.a0;
+
+  const angularSegments =
+    Math.max(
+      5,
+      Math.ceil(
+        uRange *
+          100
+      )
     );
 
-  return Math.asin(
-    sinLatitude
-  );
-}
-
-function surfacePosition(
-  u: number,
-  s: number,
-  radius: number
-) {
-  const latitude =
-    equalAreaToLatitude(
-      s
+  const radialSegments =
+    Math.max(
+      4,
+      Math.ceil(
+        aRange *
+          90
+      )
     );
 
-  const longitude =
-    u *
-    Math.PI *
-    2;
+  const positions:
+    number[] = [];
 
-  const cosLatitude =
-    Math.cos(
-      latitude
-    );
+  const normals:
+    number[] = [];
 
-  return new THREE.Vector3(
-    -radius *
-      Math.cos(
-        longitude
+  const indices:
+    number[] = [];
+
+  for (
+    let radial = 0;
+    radial <=
+    radialSegments;
+    radial++
+  ) {
+    const radialT =
+      radial /
+      radialSegments;
+
+    const area =
+      territory.a0 +
+      (
+        territory.a1 -
+        territory.a0
       ) *
-      cosLatitude,
+        radialT;
 
-    radius *
-      Math.sin(
-        latitude
+    const radius =
+      areaFractionToRadius(
+        area
+      );
+
+    for (
+      let angular = 0;
+      angular <=
+      angularSegments;
+      angular++
+    ) {
+      const angularT =
+        angular /
+        angularSegments;
+
+      const u =
+        territory.u0 +
+        (
+          territory.u1 -
+          territory.u0
+        ) *
+          angularT;
+
+      const angle =
+        (
+          u -
+          0.5
+        ) *
+        Math.PI *
+        2;
+
+      const point =
+        hillSurfacePosition(
+          u,
+          area,
+          PATCH_LIFT
+        );
+
+      const normal =
+        hillNormal(
+          radius,
+          angle
+        );
+
+      positions.push(
+        point.x,
+        point.y,
+        point.z
+      );
+
+      normals.push(
+        normal.x,
+        normal.y,
+        normal.z
+      );
+    }
+  }
+
+  for (
+    let radial = 0;
+    radial <
+    radialSegments;
+    radial++
+  ) {
+    for (
+      let angular = 0;
+      angular <
+      angularSegments;
+      angular++
+    ) {
+      const a =
+        radial *
+          (
+            angularSegments +
+            1
+          ) +
+        angular;
+
+      const b =
+        a + 1;
+
+      const c =
+        a +
+        (
+          angularSegments +
+          1
+        );
+
+      const d =
+        c + 1;
+
+      indices.push(
+        a,
+        c,
+        b,
+
+        b,
+        c,
+        d
+      );
+    }
+  }
+
+  const geometry =
+    new THREE.BufferGeometry();
+
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      positions,
+      3
+    )
+  );
+
+  geometry.setAttribute(
+    "normal",
+    new THREE.Float32BufferAttribute(
+      normals,
+      3
+    )
+  );
+
+  geometry.setIndex(
+    indices
+  );
+
+  geometry.computeBoundingSphere();
+
+  return geometry;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                           TERRITORY BORDER                                 */
+/* -------------------------------------------------------------------------- */
+
+function createTerritoryBorder(
+  territory: Territory
+) {
+  const positions:
+    number[] = [];
+
+  function add(
+    a: THREE.Vector3,
+    b: THREE.Vector3
+  ) {
+    positions.push(
+      a.x,
+      a.y,
+      a.z,
+
+      b.x,
+      b.y,
+      b.z
+    );
+  }
+
+  /*
+   * Summit cap only needs outer circle.
+   */
+  if (
+    territory.rank ===
+    1
+  ) {
+    const segments =
+      150;
+
+    for (
+      let index = 0;
+      index <
+      segments;
+      index++
+    ) {
+      const u0 =
+        index /
+        segments;
+
+      const u1 =
+        (
+          index +
+          1
+        ) /
+        segments;
+
+      add(
+        hillSurfacePosition(
+          u0,
+          territory.a1,
+          BORDER_LIFT
+        ),
+
+        hillSurfacePosition(
+          u1,
+          territory.a1,
+          BORDER_LIFT
+        )
+      );
+    }
+
+    const geometry =
+      new THREE.BufferGeometry();
+
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(
+        positions,
+        3
+      )
+    );
+
+    return geometry;
+  }
+
+  const angularSegments =
+    Math.max(
+      6,
+      Math.ceil(
+        (
+          territory.u1 -
+          territory.u0
+        ) *
+          100
+      )
+    );
+
+  const radialSegments =
+    Math.max(
+      5,
+      Math.ceil(
+        (
+          territory.a1 -
+          territory.a0
+        ) *
+          75
+      )
+    );
+
+  /* inner curved edge */
+
+  for (
+    let index = 0;
+    index <
+    angularSegments;
+    index++
+  ) {
+    const t0 =
+      index /
+      angularSegments;
+
+    const t1 =
+      (
+        index +
+        1
+      ) /
+      angularSegments;
+
+    add(
+      hillSurfacePosition(
+        THREE.MathUtils.lerp(
+          territory.u0,
+          territory.u1,
+          t0
+        ),
+        territory.a0,
+        BORDER_LIFT
       ),
 
-    radius *
-      Math.sin(
-        longitude
-      ) *
-      cosLatitude
-  );
-}
+      hillSurfacePosition(
+        THREE.MathUtils.lerp(
+          territory.u0,
+          territory.u1,
+          t1
+        ),
+        territory.a0,
+        BORDER_LIFT
+      )
+    );
+  }
 
-function territoryCenterPosition(
-  territory: Territory,
-  radius =
-    LABEL_RADIUS
-) {
-  return surfacePosition(
-    (
-      territory.u0 +
-      territory.u1
-    ) /
-      2,
+  /* outer curved edge */
 
-    (
-      territory.s0 +
-      territory.s1
-    ) /
-      2,
+  for (
+    let index = 0;
+    index <
+    angularSegments;
+    index++
+  ) {
+    const t0 =
+      index /
+      angularSegments;
 
-    radius
-  );
-}
+    const t1 =
+      (
+        index +
+        1
+      ) /
+      angularSegments;
 
-/* -------------------------------------------------------------------------- */
-/*                           UV -> HOLDER LOOKUP                              */
-/* -------------------------------------------------------------------------- */
+    add(
+      hillSurfacePosition(
+        THREE.MathUtils.lerp(
+          territory.u0,
+          territory.u1,
+          t0
+        ),
+        territory.a1,
+        BORDER_LIFT
+      ),
 
-function uvToEqualAreaS(
-  v: number
-) {
-  const normalizedV =
-    clamp(
-      v,
-      0,
-      1
+      hillSurfacePosition(
+        THREE.MathUtils.lerp(
+          territory.u0,
+          territory.u1,
+          t1
+        ),
+        territory.a1,
+        BORDER_LIFT
+      )
+    );
+  }
+
+  /*
+   * Only two clean radial separators.
+   */
+
+  for (
+    let index = 0;
+    index <
+    radialSegments;
+    index++
+  ) {
+    const t0 =
+      index /
+      radialSegments;
+
+    const t1 =
+      (
+        index +
+        1
+      ) /
+      radialSegments;
+
+    const a0 =
+      THREE.MathUtils.lerp(
+        territory.a0,
+        territory.a1,
+        t0
+      );
+
+    const a1 =
+      THREE.MathUtils.lerp(
+        territory.a0,
+        territory.a1,
+        t1
+      );
+
+    add(
+      hillSurfacePosition(
+        territory.u0,
+        a0,
+        BORDER_LIFT
+      ),
+
+      hillSurfacePosition(
+        territory.u0,
+        a1,
+        BORDER_LIFT
+      )
     );
 
-  const latitude =
-    normalizedV *
-      Math.PI -
-    Math.PI /
+    add(
+      hillSurfacePosition(
+        territory.u1,
+        a0,
+        BORDER_LIFT
+      ),
+
+      hillSurfacePosition(
+        territory.u1,
+        a1,
+        BORDER_LIFT
+      )
+    );
+  }
+
+  const geometry =
+    new THREE.BufferGeometry();
+
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      positions,
+      3
+    )
+  );
+
+  return geometry;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            TERRITORY SIZE                                  */
+/* -------------------------------------------------------------------------- */
+
+function getTerritoryPhysicalSize(
+  territory: Territory
+) {
+  const middleArea =
+    (
+      territory.a0 +
+      territory.a1
+    ) /
       2;
 
-  return (
-    Math.sin(
-      latitude
-    ) +
-    1
-  ) / 2;
-}
-
-function getTerritoryAtUv(
-  u: number,
-  v: number,
-  territories: Territory[]
-) {
-  const normalizedU =
-    ((u % 1) +
-      1) %
-    1;
-
-  const s =
-    uvToEqualAreaS(
-      v
+  const radius =
+    areaFractionToRadius(
+      middleArea
     );
 
-  return (
-    territories.find(
+  const angularWidth =
+    Math.max(
+      0.001,
+
       (
-        territory
-      ) => {
-        const insideU =
-          normalizedU >=
-            territory.u0 &&
-          (
-            normalizedU <
-              territory.u1 ||
-            territory.u1 ===
-              1
-          );
+        territory.u1 -
+        territory.u0
+      ) *
+        Math.PI *
+        2 *
+        radius
+    );
 
-        const insideS =
-          s >=
-            territory.s0 &&
-          (
-            s <
-              territory.s1 ||
-            territory.s1 ===
-              1
-          );
+  /*
+   * Approximate true radial distance over
+   * the curved hill.
+   */
+  const steps =
+    12;
 
-        return (
-          insideU &&
-          insideS
-        );
-      }
-    ) ??
-    null
-  );
+  let radialLength =
+    0;
+
+  let previous =
+    hillSurfacePosition(
+      0.5,
+      territory.a0
+    );
+
+  for (
+    let index = 1;
+    index <= steps;
+    index++
+  ) {
+    const area =
+      THREE.MathUtils.lerp(
+        territory.a0,
+        territory.a1,
+        index /
+          steps
+      );
+
+    const point =
+      hillSurfacePosition(
+        0.5,
+        area
+      );
+
+    radialLength +=
+      point.distanceTo(
+        previous
+      );
+
+    previous =
+      point;
+  }
+
+  return {
+    angularWidth,
+    radialLength,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
-/*                               LABEL TEXTURE                                */
+/*                              LABEL TEXTURE                                 */
 /* -------------------------------------------------------------------------- */
 
-function makeLabelTexture(
-  address: string
+function createLabelTexture(
+  holder: Holder
 ) {
   if (
     typeof document ===
@@ -1210,11 +1683,6 @@ function makeLabelTexture(
   ) {
     return null;
   }
-
-  const text =
-    abbreviateAddress(
-      address
-    );
 
   const canvas =
     document.createElement(
@@ -1225,7 +1693,7 @@ function makeLabelTexture(
     1024;
 
   canvas.height =
-    256;
+    220;
 
   const ctx =
     canvas.getContext(
@@ -1249,28 +1717,34 @@ function makeLabelTexture(
   ctx.textBaseline =
     "middle";
 
-  /*
-   * Pick up your page-level Pixelify Sans font.
-   */
   const pageFont =
     window.getComputedStyle(
       document.body
     ).fontFamily;
 
   ctx.font =
-    `600 90px ${pageFont}`;
+    `600 78px ${pageFont}`;
 
+  /*
+   * Smaller shadow because text now sits
+   * directly against the hill instead of
+   * floating above it.
+   */
   ctx.shadowColor =
     "rgba(0,0,0,0.95)";
 
   ctx.shadowBlur =
-    18;
+    9;
 
   ctx.fillStyle =
-    "rgba(255,255,255,0.96)";
+    holder.verified
+      ? "#adffc4"
+      : "rgba(240,255,245,0.92)";
 
   ctx.fillText(
-    text,
+    abbreviateAddress(
+      holder.address
+    ),
     canvas.width /
       2,
     canvas.height /
@@ -1291,36 +1765,36 @@ function makeLabelTexture(
   texture.magFilter =
     THREE.LinearFilter;
 
+  texture.generateMipmaps =
+    false;
+
   return texture;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              HOLDER LABEL                                  */
+/*                             FLAT HILL LABEL                                */
 /* -------------------------------------------------------------------------- */
 
-type HolderLabelProps = {
-  territory: Territory;
-  largestShare: number;
-  mobile: boolean;
-};
-
-function HolderLabel({
+function TerritoryLabel({
   territory,
   largestShare,
   mobile,
-}: HolderLabelProps) {
+}: {
+  territory: Territory;
+  largestShare: number;
+  mobile: boolean;
+}) {
   const texture =
     useMemo(
       () =>
-        makeLabelTexture(
-          territory
-            .holder
-            .address
+        createLabelTexture(
+          territory.holder
         ),
       [
-        territory
-          .holder
+        territory.holder
           .address,
+        territory.holder
+          .verified,
       ]
     );
 
@@ -1332,10 +1806,10 @@ function HolderLabel({
     texture,
   ]);
 
-  const position =
+  const physicalSize =
     useMemo(
       () =>
-        territoryCenterPosition(
+        getTerritoryPhysicalSize(
           territory
         ),
       [
@@ -1343,87 +1817,139 @@ function HolderLabel({
       ]
     );
 
-  const quaternion =
-    useMemo(() => {
-      const normal =
-        position
-          .clone()
-          .normalize();
+  /*
+   * King's label is intentionally moved
+   * toward the front half of the summit cap.
+   *
+   * A full circular cap has no meaningful
+   * angular "center".
+   */
+  const centerU =
+    territory.rank ===
+    1
+      ? 0.5
+      : (
+          territory.u0 +
+          territory.u1
+        ) /
+          2;
 
-      const q =
-        new THREE.Quaternion();
+  const centerArea =
+    territory.rank ===
+    1
+      ? territory.a1 *
+        0.42
+      : (
+          territory.a0 +
+          territory.a1
+        ) /
+          2;
 
-      q.setFromUnitVectors(
-        new THREE.Vector3(
-          0,
-          0,
-          1
+  const position =
+    useMemo(
+      () =>
+        hillSurfacePosition(
+          centerU,
+          centerArea,
+          LABEL_LIFT
         ),
-        normal
-      );
+      [
+        centerU,
+        centerArea,
+      ]
+    );
 
-      return q;
-    }, [
-      position,
-    ]);
+  const quaternion =
+    useMemo(
+      () =>
+        hillSurfaceQuaternion(
+          centerU,
+          centerArea
+        ),
+      [
+        centerU,
+        centerArea,
+      ]
+    );
 
   if (!texture) {
     return null;
   }
 
-  const relativeShare =
+  const relative =
     territory.share /
     Math.max(
       largestShare,
       0.000001
     );
 
-  const linearScale =
-    Math.sqrt(
-      relativeShare
+  /*
+   * Desired label size.
+   */
+  let width =
+    (
+      0.36 +
+      Math.sqrt(
+        relative
+      ) *
+        0.78
+    ) *
+    (
+      mobile
+        ? 0.82
+        : 1
     );
 
-  const responsiveScale =
-    mobile
-      ? 0.78
-      : 1;
+  /*
+   * CRITICAL:
+   *
+   * Clamp the address to the actual physical
+   * dimensions of its own land plot.
+   *
+   * This prevents text spilling across
+   * boundaries / clipping over neighbors.
+   */
+  if (
+    territory.rank !==
+    1
+  ) {
+    width =
+      Math.min(
+        width,
 
-  const width =
+        physicalSize.angularWidth *
+          0.72,
+
+        physicalSize.radialLength *
+          3.15
+      );
+  }
+
+  width =
     clamp(
-      (
-        0.14 +
-        linearScale *
-          0.72
-      ) *
-        responsiveScale,
-
+      width,
       mobile
-        ? 0.09
-        : 0.11,
-
+        ? 0.12
+        : 0.14,
       mobile
-        ? 0.7
-        : 0.9
+        ? 0.72
+        : 1.02
     );
 
   const height =
     width *
-    0.25;
+    0.215;
 
   return (
     <mesh
-      /*
-       * Important:
-       * labels never intercept moon hover events.
-       */
-      raycast={() => {}}
       position={
         position
       }
       quaternion={
         quaternion
       }
-      renderOrder={5}
+      raycast={() => {}}
+      renderOrder={7}
     >
       <planeGeometry
         args={[
@@ -1438,17 +1964,21 @@ function HolderLabel({
         }
         transparent
         alphaTest={
-          0.03
+          0.025
         }
         depthTest
         depthWrite={
           false
         }
-        side={
-          THREE.DoubleSide
-        }
         toneMapped={
           false
+        }
+        side={
+          THREE.FrontSide
+        }
+        polygonOffset
+        polygonOffsetFactor={
+          -2
         }
       />
     </mesh>
@@ -1456,7 +1986,7 @@ function HolderLabel({
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              HOLDER TOOLTIP                                */
+/*                                TOOLTIP                                     */
 /* -------------------------------------------------------------------------- */
 
 function HolderTooltip({
@@ -1464,15 +1994,38 @@ function HolderTooltip({
 }: {
   territory: Territory;
 }) {
+  const u =
+    territory.rank ===
+    1
+      ? 0.5
+      : (
+          territory.u0 +
+          territory.u1
+        ) /
+          2;
+
+  const area =
+    territory.rank ===
+    1
+      ? territory.a1 *
+        0.45
+      : (
+          territory.a0 +
+          territory.a1
+        ) /
+          2;
+
   const position =
     useMemo(
       () =>
-        territoryCenterPosition(
-          territory,
-          TOOLTIP_RADIUS
+        hillSurfacePosition(
+          u,
+          area,
+          TOOLTIP_LIFT
         ),
       [
-        territory,
+        u,
+        area,
       ]
     );
 
@@ -1482,7 +2035,6 @@ function HolderTooltip({
         position
       }
       center
-      occlude
       zIndexRange={[
         100,
         0,
@@ -1492,42 +2044,43 @@ function HolderTooltip({
           "none",
       }}
     >
-      <div className="w-max min-w-[180px] max-w-[270px] rounded-xl border border-white/10 bg-black/90 px-3 py-2.5 text-white shadow-2xl backdrop-blur-md">
-        <div className="text-[9px] uppercase tracking-[0.14em] text-white/35">
-          Holder
+      <div className="w-max min-w-[190px] max-w-[280px] rounded-xl border border-[#55f58a]/25 bg-black/95 p-3 text-white shadow-[0_14px_50px_rgba(0,0,0,0.65)] backdrop-blur-md">
+        <div className="flex items-center justify-between gap-5">
+          <span className="text-[9px] uppercase tracking-[0.14em] text-[#55f58a]">
+            {territory.rank ===
+            1
+              ? "king of the hill"
+              : `rank #${territory.rank}`}
+          </span>
+
+          {territory.holder
+            .verified && (
+            <span className="text-[9px] uppercase tracking-[0.1em] text-[#adffc4]">
+              ✓ verified
+            </span>
+          )}
         </div>
 
-        <div className="mt-1 max-w-[240px] break-all text-[11px] leading-4 text-white">
+        <div className="mt-2 max-w-[245px] break-all text-[11px] leading-4 text-white/90">
           {
-            territory
-              .holder
+            territory.holder
               .address
           }
         </div>
 
-        {/* Verified holder message */}
-        {territory
-          .holder
+        {territory.holder
           .verified &&
-          territory
-            .holder
+          territory.holder
             .message && (
             <div className="mt-2 border-t border-white/10 pt-2">
-              <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-[0.12em] text-white/45">
-                <span>
-                  ✓
-                </span>
-
-                <span>
-                  Verified holder
-                </span>
+              <div className="text-[9px] uppercase tracking-[0.12em] text-white/30">
+                holder message
               </div>
 
-              <div className="mt-1.5 max-w-[240px] break-words text-xs leading-4 text-white/80">
+              <div className="mt-1.5 text-xs leading-4 text-[#c6ffd5]">
                 “
                 {
-                  territory
-                    .holder
+                  territory.holder
                     .message
                 }
                 ”
@@ -1535,16 +2088,15 @@ function HolderTooltip({
             </div>
           )}
 
-        <div className="mt-2 flex items-end justify-between gap-6 border-t border-white/10 pt-2">
+        <div className="mt-3 grid grid-cols-2 gap-6 border-t border-white/10 pt-2">
           <div>
             <div className="text-[9px] uppercase tracking-[0.12em] text-white/30">
-              Tokens
+              holdings
             </div>
 
-            <div className="mt-0.5 text-[11px] text-white/70">
+            <div className="mt-0.5 text-xs text-white/70">
               {formatTokenAmount(
-                territory
-                  .holder
+                territory.holder
                   .balance
               )}
             </div>
@@ -1552,10 +2104,10 @@ function HolderTooltip({
 
           <div className="text-right">
             <div className="text-[9px] uppercase tracking-[0.12em] text-white/30">
-              Share
+              hill share
             </div>
 
-            <div className="mt-0.5 text-[11px] text-white/70">
+            <div className="mt-0.5 text-xs text-[#55f58a]">
               {(
                 territory.share *
                 100
@@ -1572,26 +2124,471 @@ function HolderTooltip({
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              AUTOMATIC SPIN                                */
+/*                            TERRITORY COLOR                                 */
 /* -------------------------------------------------------------------------- */
 
-function AutoSpin({
+function getTerritoryColor(
+  territory: Territory,
+  count: number,
+  active: boolean
+) {
+  const rankStrength =
+    count <= 1
+      ? 1
+      : 1 -
+        (
+          territory.rank -
+          1
+        ) /
+          (
+            count -
+            1
+          );
+
+  const low =
+    new THREE.Color(
+      "#102b1a"
+    );
+
+  const high =
+    new THREE.Color(
+      "#3ebf6b"
+    );
+
+  low.lerp(
+    high,
+    0.08 +
+      Math.pow(
+        rankStrength,
+        1.4
+      ) *
+        0.55
+  );
+
+  /*
+   * Very subtle ring alternation.
+   *
+   * Enough to separate groups without
+   * turning the hill into a rainbow.
+   */
+  if (
+    territory.ring %
+      2 ===
+    0
+  ) {
+    low.multiplyScalar(
+      0.9
+    );
+  }
+
+  if (
+    territory.rank ===
+    1
+  ) {
+    low.set(
+      "#51dc7c"
+    );
+  }
+
+  if (
+    territory.holder
+      .verified
+  ) {
+    low.lerp(
+      new THREE.Color(
+        PUMP_GREEN_BRIGHT
+      ),
+      0.12
+    );
+  }
+
+  if (
+    active
+  ) {
+    low.lerp(
+      new THREE.Color(
+        PUMP_GREEN_BRIGHT
+      ),
+      0.42
+    );
+  }
+
+  return low;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            TERRITORY PATCH                                 */
+/* -------------------------------------------------------------------------- */
+
+function TerritoryPatch({
+  territory,
+  count,
+  largestShare,
+  active,
+  mobile,
+  onHover,
+  onPin,
+}: {
+  territory: Territory;
+  count: number;
+  largestShare: number;
+  active: boolean;
+  mobile: boolean;
+
+  onHover: (
+    address:
+      | string
+      | null
+  ) => void;
+
+  onPin: (
+    address:
+      | string
+      | null
+  ) => void;
+}) {
+  const geometry =
+    useMemo(
+      () =>
+        createTerritoryGeometry(
+          territory
+        ),
+      [
+        territory,
+      ]
+    );
+
+  const border =
+    useMemo(
+      () =>
+        createTerritoryBorder(
+          territory
+        ),
+      [
+        territory,
+      ]
+    );
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+      border.dispose();
+    };
+  }, [
+    geometry,
+    border,
+  ]);
+
+  const color =
+    useMemo(
+      () =>
+        getTerritoryColor(
+          territory,
+          count,
+          active
+        ),
+      [
+        territory,
+        count,
+        active,
+      ]
+    );
+
+  function handlePointerOver(
+    event: ThreeEvent<PointerEvent>
+  ) {
+    event.stopPropagation();
+
+    onHover(
+      territory.holder
+        .address
+    );
+
+    document.body.style.cursor =
+      "pointer";
+  }
+
+  function handlePointerOut(
+    event: ThreeEvent<PointerEvent>
+  ) {
+    event.stopPropagation();
+
+    onHover(
+      null
+    );
+
+    document.body.style.cursor =
+      "";
+  }
+
+  return (
+    <>
+      <mesh
+        geometry={
+          geometry
+        }
+        onPointerOver={
+          handlePointerOver
+        }
+        onPointerOut={
+          handlePointerOut
+        }
+        onClick={(
+          event
+        ) => {
+          event.stopPropagation();
+
+          onPin(
+            active
+              ? null
+              : territory.holder
+                  .address
+          );
+        }}
+      >
+        <meshStandardMaterial
+          color={
+            color
+          }
+          roughness={
+            0.94
+          }
+          metalness={
+            0
+          }
+          emissive={
+            active ||
+            territory.rank ===
+              1
+              ? PUMP_GREEN
+              : PUMP_GREEN_DEEP
+          }
+          emissiveIntensity={
+            active
+              ? 0.12
+              : territory.rank ===
+                  1
+                ? 0.07
+                : 0.004
+          }
+        />
+      </mesh>
+
+      <lineSegments
+        geometry={
+          border
+        }
+        raycast={() => {}}
+        renderOrder={5}
+      >
+        <lineBasicMaterial
+          color={
+            active
+              ? PUMP_GREEN_BRIGHT
+              : PUMP_GREEN
+          }
+          transparent
+          opacity={
+            active
+              ? 0.68
+              : territory.rank ===
+                  1
+                ? 0.34
+                : 0.14
+          }
+          depthWrite={
+            false
+          }
+        />
+      </lineSegments>
+
+      <TerritoryLabel
+        territory={
+          territory
+        }
+        largestShare={
+          largestShare
+        }
+        mobile={
+          mobile
+        }
+      />
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               KING MARKER                                  */
+/* -------------------------------------------------------------------------- */
+
+function KingMarker({
+  king,
+}: {
+  king:
+    | Territory
+    | undefined;
+}) {
+  if (!king) {
+    return null;
+  }
+
+  const summitY =
+    hillHeightAtRadius(
+      0
+    );
+
+  return (
+    <group>
+      {/* tiny pole */}
+      <mesh
+        position={[
+          0,
+          summitY +
+            0.29,
+          0,
+        ]}
+        raycast={() => {}}
+      >
+        <cylinderGeometry
+          args={[
+            0.012,
+            0.012,
+            0.58,
+            8,
+          ]}
+        />
+
+        <meshBasicMaterial
+          color="#d7ffe2"
+        />
+      </mesh>
+
+      {/* flag */}
+      <mesh
+        position={[
+          0.18,
+          summitY +
+            0.46,
+          0,
+        ]}
+        raycast={() => {}}
+      >
+        <planeGeometry
+          args={[
+            0.36,
+            0.2,
+          ]}
+        />
+
+        <meshStandardMaterial
+          color={
+            PUMP_GREEN
+          }
+          emissive={
+            PUMP_GREEN
+          }
+          emissiveIntensity={
+            0.22
+          }
+          side={
+            THREE.DoubleSide
+          }
+        />
+      </mesh>
+    </group>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                BASE HILL                                   */
+/* -------------------------------------------------------------------------- */
+
+function BaseHill() {
+  const geometry =
+    useMemo(
+      () =>
+        createHillGeometry(),
+      []
+    );
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+    };
+  }, [
+    geometry,
+  ]);
+
+  return (
+    <>
+      <mesh
+        geometry={
+          geometry
+        }
+        raycast={() => {}}
+      >
+        <meshStandardMaterial
+          color="#09170e"
+          roughness={1}
+          metalness={0}
+        />
+      </mesh>
+
+      {/* subtle clean outer edge */}
+      <mesh
+        rotation={[
+          Math.PI /
+            2,
+          0,
+          0,
+        ]}
+        position={[
+          0,
+          HILL_BASE_Y +
+            0.012,
+          0,
+        ]}
+        raycast={() => {}}
+      >
+        <torusGeometry
+          args={[
+            HILL_RADIUS +
+              0.012,
+            0.018,
+            8,
+            200,
+          ]}
+        />
+
+        <meshBasicMaterial
+          color={
+            PUMP_GREEN
+          }
+          transparent
+          opacity={
+            0.42
+          }
+        />
+      </mesh>
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              ROTATION                                      */
+/* -------------------------------------------------------------------------- */
+
+function SlowRotate({
   children,
   paused,
 }: {
-  children:
-    ReactNode;
-
-  paused:
-    boolean;
+  children: ReactNode;
+  paused: boolean;
 }) {
   const group =
     useRef<THREE.Group>(
       null
     );
-
-  const elapsed =
-    useRef(0);
 
   useFrame(
     (
@@ -1599,56 +2596,223 @@ function AutoSpin({
       delta
     ) => {
       if (
-        !group.current
-      ) {
-        return;
-      }
-
-      /*
-       * Keep holder under cursor stationary while
-       * tooltip is being inspected.
-       */
-      if (
+        !group.current ||
         paused
       ) {
         return;
       }
 
-      elapsed.current +=
-        delta;
-
-      const t =
-        elapsed.current;
-
-      group.current.rotation.y =
-        t *
-        0.115;
-
-      group.current.rotation.x =
-        0.08 +
-        Math.sin(
-          t *
-            0.09
-        ) *
-          0.82;
-
-      group.current.rotation.z =
-        Math.sin(
-          t *
-            0.057
-        ) *
-        0.09;
+      group.current.rotation.y +=
+        delta *
+        0.032;
     }
   );
 
   return (
     <group
-      ref={
-        group
-      }
+      ref={group}
     >
       {children}
     </group>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              HOLDER HILL                                   */
+/* -------------------------------------------------------------------------- */
+
+function HolderHill({
+  holders,
+  mobile,
+}: {
+  holders: Holder[];
+  mobile: boolean;
+}) {
+  const territories =
+    useMemo(
+      () =>
+        buildTerritories(
+          holders
+        ),
+      [
+        holders,
+      ]
+    );
+
+  const [
+    hoveredAddress,
+    setHoveredAddress,
+  ] =
+    useState<
+      string | null
+    >(null);
+
+  const [
+    pinnedAddress,
+    setPinnedAddress,
+  ] =
+    useState<
+      string | null
+    >(null);
+
+  useEffect(() => {
+    return () => {
+      document.body.style.cursor =
+        "";
+    };
+  }, []);
+
+  const activeAddress =
+    hoveredAddress ??
+    pinnedAddress;
+
+  const activeTerritory =
+    useMemo(
+      () =>
+        territories.find(
+          (
+            territory
+          ) =>
+            territory.holder
+              .address ===
+            activeAddress
+        ) ??
+        null,
+      [
+        territories,
+        activeAddress,
+      ]
+    );
+
+  const largestShare =
+    territories[0]
+      ?.share ??
+    0;
+
+  return (
+    <>
+      <BaseHill />
+
+      <SlowRotate
+        paused={
+          Boolean(
+            activeAddress
+          )
+        }
+      >
+        {territories.map(
+          (
+            territory
+          ) => (
+            <TerritoryPatch
+              key={
+                territory.holder
+                  .address
+              }
+              territory={
+                territory
+              }
+              count={
+                territories.length
+              }
+              largestShare={
+                largestShare
+              }
+              active={
+                territory.holder
+                  .address ===
+                activeAddress
+              }
+              mobile={
+                mobile
+              }
+              onHover={
+                setHoveredAddress
+              }
+              onPin={(
+                address
+              ) => {
+                setPinnedAddress(
+                  (
+                    current
+                  ) =>
+                    current ===
+                    address
+                      ? null
+                      : address
+                );
+              }}
+            />
+          )
+        )}
+
+        {activeTerritory && (
+          <HolderTooltip
+            territory={
+              activeTerritory
+            }
+          />
+        )}
+      </SlowRotate>
+
+      <KingMarker
+        king={
+          territories[0]
+        }
+      />
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                  GROUND                                    */
+/* -------------------------------------------------------------------------- */
+
+function Ground() {
+  return (
+    <>
+      <mesh
+        rotation={[
+          -Math.PI /
+            2,
+          0,
+          0,
+        ]}
+        position={[
+          0,
+          HILL_BASE_Y -
+            0.035,
+          0,
+        ]}
+        raycast={() => {}}
+      >
+        <planeGeometry
+          args={[
+            34,
+            34,
+          ]}
+        />
+
+        <meshBasicMaterial
+          color="#010302"
+        />
+      </mesh>
+
+      <gridHelper
+        args={[
+          28,
+          56,
+          "#11351e",
+          "#06120a",
+        ]}
+        position={[
+          0,
+          HILL_BASE_Y -
+            0.02,
+          0,
+        ]}
+      />
+    </>
   );
 }
 
@@ -1671,18 +2835,46 @@ function ResponsiveCamera() {
       size.width <
       640;
 
-    perspective.position.set(
-      0,
-      0,
+    if (
       mobile
-        ? 8.3
-        : 7.5
-    );
+    ) {
+      perspective.position.set(
+        0,
+        5.9,
+        18
+      );
 
-    perspective.fov =
-      mobile
-        ? 44
-        : 38;
+      perspective.fov =
+        46;
+
+      /*
+       * Slight downward view:
+       *
+       * whole circular base is visible,
+       * but still low enough to read
+       * the hill silhouette.
+       */
+      perspective.lookAt(
+        0,
+        -0.65,
+        0
+      );
+    } else {
+      perspective.position.set(
+        0,
+        5.6,
+        12.9
+      );
+
+      perspective.fov =
+        40;
+
+      perspective.lookAt(
+        0,
+        -0.45,
+        0
+      );
+    }
 
     perspective.updateProjectionMatrix();
   }, [
@@ -1694,341 +2886,7 @@ function ResponsiveCamera() {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                   MOON                                     */
-/* -------------------------------------------------------------------------- */
-
-function Moon({
-  holders,
-}: MoonSceneProps) {
-  const {
-    size,
-  } =
-    useThree();
-
-  const mobile =
-    size.width <
-    640;
-
-  const territories =
-    useMemo(
-      () =>
-        buildTreemap(
-          holders.slice(
-            0,
-            100
-          )
-        ),
-      [
-        holders,
-      ]
-    );
-
-  const largestShare =
-    useMemo(
-      () =>
-        Math.max(
-          ...territories.map(
-            (
-              territory
-            ) =>
-              territory.share
-          ),
-          0
-        ),
-      [
-        territories,
-      ]
-    );
-
-  const [
-    hovered,
-    setHovered,
-  ] =
-    useState<Territory | null>(
-      null
-    );
-
-  const [
-    pinned,
-    setPinned,
-  ] =
-    useState<Territory | null>(
-      null
-    );
-
-  const [
-    moonTexture,
-    setMoonTexture,
-  ] =
-    useState<THREE.CanvasTexture | null>(
-      null
-    );
-
-  useEffect(() => {
-    const texture =
-      createMoonTexture(
-        mobile
-      );
-
-    setMoonTexture(
-      texture
-    );
-
-    return () => {
-      texture?.dispose();
-    };
-  }, [
-    mobile,
-  ]);
-
-  useEffect(() => {
-    return () => {
-      document.body.style.cursor =
-        "";
-    };
-  }, []);
-
-  /*
-   * If holder data refreshes, update the currently
-   * hovered/pinned Territory object too so a newly
-   * verified message can appear immediately.
-   */
-  useEffect(() => {
-    setHovered(
-      (
-        current
-      ) => {
-        if (
-          !current
-        ) {
-          return null;
-        }
-
-        return (
-          territories.find(
-            (
-              territory
-            ) =>
-              territory
-                .holder
-                .address ===
-              current
-                .holder
-                .address
-          ) ??
-          null
-        );
-      }
-    );
-
-    setPinned(
-      (
-        current
-      ) => {
-        if (
-          !current
-        ) {
-          return null;
-        }
-
-        return (
-          territories.find(
-            (
-              territory
-            ) =>
-              territory
-                .holder
-                .address ===
-              current
-                .holder
-                .address
-          ) ??
-          null
-        );
-      }
-    );
-  }, [
-    territories,
-  ]);
-
-  const activeTerritory =
-    hovered ??
-    pinned;
-
-  const segments =
-    mobile
-      ? 96
-      : 160;
-
-  return (
-    <AutoSpin
-      paused={
-        activeTerritory !==
-        null
-      }
-    >
-      {/* Actual moon is the only interactive/raycast surface */}
-      <mesh
-        onPointerMove={(
-          event
-        ) => {
-          event.stopPropagation();
-
-          if (
-            !event.uv
-          ) {
-            return;
-          }
-
-          const territory =
-            getTerritoryAtUv(
-              event.uv.x,
-              event.uv.y,
-              territories
-            );
-
-          setHovered(
-            (
-              current
-            ) =>
-              current
-                ?.holder
-                .address ===
-              territory
-                ?.holder
-                .address
-                ? current
-                : territory
-          );
-
-          document.body.style.cursor =
-            territory
-              ? "pointer"
-              : "";
-        }}
-        onPointerOut={() => {
-          setHovered(
-            null
-          );
-
-          document.body.style.cursor =
-            "";
-        }}
-        onClick={(
-          event
-        ) => {
-          event.stopPropagation();
-
-          if (
-            !event.uv
-          ) {
-            return;
-          }
-
-          const territory =
-            getTerritoryAtUv(
-              event.uv.x,
-              event.uv.y,
-              territories
-            );
-
-          if (
-            !territory
-          ) {
-            setPinned(
-              null
-            );
-
-            return;
-          }
-
-          /*
-           * Useful on mobile:
-           * tap once to pin, tap same region again to close.
-           */
-          setPinned(
-            (
-              current
-            ) =>
-              current
-                ?.holder
-                .address ===
-              territory
-                .holder
-                .address
-                ? null
-                : territory
-          );
-        }}
-      >
-        <sphereGeometry
-          args={[
-            MOON_RADIUS,
-            segments,
-            segments,
-          ]}
-        />
-
-        <meshStandardMaterial
-          map={
-            moonTexture ??
-            undefined
-          }
-          bumpMap={
-            moonTexture ??
-            undefined
-          }
-          bumpScale={
-            0.025
-          }
-          roughness={
-            1
-          }
-          metalness={
-            0
-          }
-          color="#b6b6b6"
-        />
-      </mesh>
-
-      {/* Holder tooltip */}
-      {activeTerritory && (
-        <HolderTooltip
-          territory={
-            activeTerritory
-          }
-        />
-      )}
-
-      {/* Surface wallet labels */}
-      {territories.map(
-        (
-          territory
-        ) => (
-          <HolderLabel
-            key={
-              territory
-                .holder
-                .address
-            }
-            territory={
-              territory
-            }
-            largestShare={
-              largestShare
-            }
-            mobile={
-              mobile
-            }
-          />
-        )
-      )}
-    </AutoSpin>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*                                   SCENE                                    */
+/*                                  SCENE                                     */
 /* -------------------------------------------------------------------------- */
 
 function SceneContent({
@@ -2043,67 +2901,159 @@ function SceneContent({
     size.width <
     640;
 
+  const scale:
+    [
+      number,
+      number,
+      number
+    ] =
+    mobile
+      ? [
+          0.72,
+          0.82,
+          0.72,
+        ]
+      : [
+          1,
+          1,
+          1,
+        ];
+
+  const position:
+    [
+      number,
+      number,
+      number
+    ] =
+    mobile
+      ? [
+          0,
+          -0.95,
+          0,
+        ]
+      : [
+          0,
+          -0.42,
+          0,
+        ];
+
   return (
     <>
       <ResponsiveCamera />
 
+      <fog
+        attach="fog"
+        args={[
+          "#000000",
+          mobile
+            ? 18
+            : 14,
+          mobile
+            ? 34
+            : 27,
+        ]}
+      />
+
       <ambientLight
         intensity={
-          0.08
+          0.42
         }
       />
 
       <directionalLight
         position={[
-          -4,
-          3,
+          -5,
+          9,
+          8,
+        ]}
+        intensity={
+          2.15
+        }
+      />
+
+      <directionalLight
+        position={[
+          5,
+          2,
+          -5,
+        ]}
+        intensity={
+          0.22
+        }
+        color={
+          PUMP_GREEN
+        }
+      />
+
+      <pointLight
+        position={[
+          0,
+          5,
           5,
         ]}
         intensity={
-          3.15
+          4
+        }
+        distance={
+          16
+        }
+        decay={2}
+        color={
+          PUMP_GREEN
         }
       />
 
-      <directionalLight
-        position={[
-          4,
-          -1,
-          -3,
-        ]}
-        intensity={
-          0.12
+      <group
+        position={
+          position
         }
-      />
+        scale={
+          scale
+        }
+      >
+        <Ground />
 
-      <Moon
-        holders={
-          holders
-        }
-      />
+        <HolderHill
+          holders={
+            holders
+          }
+          mobile={
+            mobile
+          }
+        />
+      </group>
 
-      <Stars
-        radius={
-          60
-        }
-        depth={
-          30
-        }
+      <Sparkles
         count={
           mobile
-            ? 550
-            : 1100
+            ? 12
+            : 22
         }
-        factor={
+        scale={[
           mobile
-            ? 1.1
-            : 1.35
+            ? 9
+            : 14,
+          8,
+          8,
+        ]}
+        position={[
+          0,
+          0,
+          -3,
+        ]}
+        size={
+          mobile
+            ? 0.6
+            : 0.85
         }
-        saturation={
-          0
-        }
-        fade
         speed={
-          0.025
+          0.05
+        }
+        opacity={
+          0.1
+        }
+        color={
+          PUMP_GREEN
         }
       />
     </>
@@ -2126,12 +3076,12 @@ export default function MoonScene({
       camera={{
         position: [
           0,
-          0,
-          7.5,
+          5.6,
+          12.9,
         ],
 
         fov:
-          38,
+          40,
 
         near:
           0.1,
@@ -2148,6 +3098,10 @@ export default function MoonScene({
 
         powerPreference:
           "high-performance",
+      }}
+      onPointerMissed={() => {
+        document.body.style.cursor =
+          "";
       }}
     >
       <color
