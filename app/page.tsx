@@ -50,7 +50,7 @@ type HoldersResponse = {
 };
 
 const TOKEN_MINT =
-  "461C1ngHZtzTvMWT8gL7C2JLaYg2VQvaYj8aDFqhEni1";
+  "XXXXXXXXXXXXX";
 
 const REFRESH_INTERVAL_MS =
   60_000;
