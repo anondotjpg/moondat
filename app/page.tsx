@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import MoonScene from "./components/MoonScene";
 
 type Holder = {
@@ -15,20 +19,36 @@ type HoldersResponse = {
   holders: Holder[];
   holderCount: number;
   displayedBalance: number;
+
   excludedLiquidityPool: {
     address: string;
     balance: number;
   } | null;
+
+  totalWalletCount?: number;
+  qualifyingHolderCount?: number;
+  updatedAt?: string;
 };
 
-const TOKEN_MINT = "461C1ngHZtzTvMWT8gL7C2JLaYg2VQvaYj8aDFqhEni1";
+const TOKEN_MINT =
+  "461C1ngHZtzTvMWT8gL7C2JLaYg2VQvaYj8aDFqhEni1";
 
-function abbreviateMint(address: string) {
-  if (address.length < 10) {
+const REFRESH_INTERVAL_MS =
+  60_000;
+
+function abbreviateMint(
+  address: string
+) {
+  if (
+    address.length < 10
+  ) {
     return address;
   }
 
-  return `${address.slice(0, 5)}…${address.slice(-5)}`;
+  return `${address.slice(
+    0,
+    5
+  )}…${address.slice(-5)}`;
 }
 
 function CopyIcon() {
@@ -43,7 +63,14 @@ function CopyIcon() {
       className="h-3.5 w-3.5"
       aria-hidden="true"
     >
-      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <rect
+        x="9"
+        y="9"
+        width="11"
+        height="11"
+        rx="2"
+      />
+
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
     </svg>
   );
@@ -67,92 +94,255 @@ function CheckIcon() {
 }
 
 export default function Home() {
-  const [holders, setHolders] = useState<Holder[]>([]);
-  const [displayedBalance, setDisplayedBalance] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [
+    holders,
+    setHolders,
+  ] =
+    useState<Holder[]>(
+      []
+    );
+
+  const [
+    displayedBalance,
+    setDisplayedBalance,
+  ] =
+    useState(0);
+
+  const [
+    loading,
+    setLoading,
+  ] =
+    useState(true);
+
+  const [
+    error,
+    setError,
+  ] =
+    useState<
+      string | null
+    >(null);
+
+  const [
+    copied,
+    setCopied,
+  ] =
+    useState(false);
+
+  const [
+    updatedAt,
+    setUpdatedAt,
+  ] =
+    useState<
+      string | null
+    >(null);
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled =
+      false;
 
-    async function loadHolders() {
+    async function loadHolders(
+      initial = false
+    ) {
       try {
-        setLoading(true);
-        setError(null);
-
-        const response = await fetch(
-          `/api/holders?mint=${encodeURIComponent(TOKEN_MINT)}`,
-          {
-            cache: "no-store",
-          }
-        );
-
-        if (!response.ok) {
-          const body = await response.json().catch(() => null);
-
-          throw new Error(
-            body?.error || `Unable to load holders (${response.status})`
+        if (initial) {
+          setLoading(
+            true
           );
         }
 
-        const data = (await response.json()) as HoldersResponse;
+        /*
+         * Don't blank the existing moon during
+         * background refreshes.
+         */
+        if (initial) {
+          setError(null);
+        }
 
-        if (cancelled) {
+        const response =
+          await fetch(
+            "/api/holders",
+            {
+              cache:
+                "no-store",
+            }
+          );
+
+        if (
+          !response.ok
+        ) {
+          const body =
+            await response
+              .json()
+              .catch(
+                () =>
+                  null
+              );
+
+          throw new Error(
+            body?.error ||
+              `Unable to load holders (${response.status})`
+          );
+        }
+
+        const data =
+          (await response.json()) as HoldersResponse;
+
+        if (
+          cancelled
+        ) {
           return;
         }
 
-        setHolders((data.holders ?? []).slice(0, 100));
+        setHolders(
+          (
+            data.holders ??
+            []
+          ).slice(
+            0,
+            100
+          )
+        );
 
         setDisplayedBalance(
-          typeof data.displayedBalance === "number"
+          typeof data.displayedBalance ===
+            "number"
             ? data.displayedBalance
             : 0
         );
+
+        setUpdatedAt(
+          data.updatedAt ??
+            null
+        );
+
+        /*
+         * Clear an old error after a successful
+         * refresh.
+         */
+        setError(null);
       } catch (err) {
-        if (cancelled) {
+        if (
+          cancelled
+        ) {
           return;
         }
 
-        setError(
-          err instanceof Error ? err.message : "Unable to load holders."
-        );
+        const message =
+          err instanceof
+          Error
+            ? err.message
+            : "Unable to load holders.";
+
+        /*
+         * If we already have holder data,
+         * preserve the moon during a temporary
+         * refresh failure.
+         */
+        if (
+          initial ||
+          holders.length ===
+            0
+        ) {
+          setError(
+            message
+          );
+        } else {
+          console.error(
+            "[holders-refresh]",
+            err
+          );
+        }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
+        if (
+          initial &&
+          !cancelled
+        ) {
+          setLoading(
+            false
+          );
         }
       }
     }
 
-    loadHolders();
+    /*
+     * Immediate snapshot read.
+     */
+    void loadHolders(
+      true
+    );
+
+    /*
+     * Refresh stored snapshot from Supabase
+     * every 60 seconds.
+     *
+     * This route does NOT call Helius.
+     */
+    const interval =
+      window.setInterval(
+        () => {
+          void loadHolders(
+            false
+          );
+        },
+        REFRESH_INTERVAL_MS
+      );
 
     return () => {
-      cancelled = true;
+      cancelled =
+        true;
+
+      window.clearInterval(
+        interval
+      );
     };
   }, []);
 
-  const visibleBalance = useMemo(() => {
-    if (displayedBalance > 0) {
-      return displayedBalance;
-    }
+  const visibleBalance =
+    useMemo(() => {
+      if (
+        displayedBalance >
+        0
+      ) {
+        return displayedBalance;
+      }
 
-    return holders.reduce(
-      (total, holder) => total + holder.balance,
-      0
-    );
-  }, [displayedBalance, holders]);
+      return holders.reduce(
+        (
+          total,
+          holder
+        ) =>
+          total +
+          holder.balance,
+        0
+      );
+    }, [
+      displayedBalance,
+      holders,
+    ]);
 
   async function copyMint() {
     try {
-      await navigator.clipboard.writeText(TOKEN_MINT);
+      await navigator.clipboard.writeText(
+        TOKEN_MINT
+      );
 
-      setCopied(true);
+      setCopied(
+        true
+      );
 
-      window.setTimeout(() => {
-        setCopied(false);
-      }, 1500);
+      window.setTimeout(
+        () => {
+          setCopied(
+            false
+          );
+        },
+        1500
+      );
     } catch (err) {
-      console.error("Failed to copy mint:", err);
+      console.error(
+        "Failed to copy mint:",
+        err
+      );
     }
   }
 
@@ -160,7 +350,11 @@ export default function Home() {
     <main className="relative h-dvh w-full overflow-hidden bg-black text-white">
       {/* 3D moon */}
       <div className="absolute inset-0">
-        <MoonScene holders={holders} />
+        <MoonScene
+          holders={
+            holders
+          }
+        />
       </div>
 
       {/* Top left */}
@@ -169,36 +363,56 @@ export default function Home() {
           moondat.lol
         </span>
 
-        {/* Mint address */}
+        {/* Mint */}
         <div className="pointer-events-auto mt-1.5 flex items-center gap-1.5 sm:mt-2">
           <span className="text-[10px] text-white/35 sm:text-xs">
-            {abbreviateMint(TOKEN_MINT)}
+            {abbreviateMint(
+              TOKEN_MINT
+            )}
           </span>
 
           <button
             type="button"
-            onClick={copyMint}
-            aria-label={copied ? "Copied" : "Copy token address"}
-            title={copied ? "Copied" : "Copy token address"}
-            className="flex h-6 w-6 items-center justify-center rounded-md text-white/35 transition-colors hover:text-white/70 active:scale-95"
+            onClick={
+              copyMint
+            }
+            aria-label={
+              copied
+                ? "Copied"
+                : "Copy token address"
+            }
+            title={
+              copied
+                ? "Copied"
+                : "Copy token address"
+            }
+            className="flex h-6 w-6 items-center justify-center rounded-md text-white/35 transition-colors hover:bg-white/[0.06] hover:text-white/70 active:scale-95"
           >
-            {copied ? <CheckIcon /> : <CopyIcon />}
+            {copied ? (
+              <CheckIcon />
+            ) : (
+              <CopyIcon />
+            )}
           </button>
         </div>
       </div>
 
       {/* Top right */}
-      {!loading && !error && (
-        <div className="pointer-events-none absolute right-4 top-4 z-10 text-right sm:right-8 sm:top-8">
-          <div className="text-lg font-medium tabular-nums text-white sm:text-xl">
-            {holders.length}
-          </div>
+      {!loading &&
+        !error && (
+          <div className="pointer-events-none absolute right-4 top-4 z-10 text-right sm:right-8 sm:top-8">
+            <div className="text-lg font-medium tabular-nums text-white sm:text-xl">
+              {
+                holders.length
+              }
+            </div>
 
-          <div className="mt-1 text-[9px] uppercase tracking-[0.16em] text-white/30 sm:text-[10px]">
-            displayed holders
+            <div className="mt-1 text-[9px] uppercase tracking-[0.16em] text-white/30 sm:text-[10px]">
+              displayed
+              holders
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Loading */}
       {loading && (
@@ -207,31 +421,40 @@ export default function Home() {
             <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
 
             <span className="whitespace-nowrap text-xs text-white/50">
-              Mapping top holders...
+              Loading
+              holder
+              snapshot...
             </span>
           </div>
         </div>
       )}
 
       {/* Error */}
-      {error && (
-        <div className="absolute bottom-6 left-1/2 z-10 w-[calc(100%-32px)] max-w-md -translate-x-1/2 rounded-2xl border border-white/10 bg-black/75 p-4 text-center backdrop-blur-xl sm:bottom-8">
-          <p className="text-sm text-white/65">{error}</p>
-        </div>
-      )}
+      {!loading &&
+        error && (
+          <div className="absolute bottom-6 left-1/2 z-10 w-[calc(100%-32px)] max-w-md -translate-x-1/2 rounded-2xl border border-white/10 bg-black/75 p-4 text-center backdrop-blur-xl sm:bottom-8">
+            <p className="text-sm text-white/65">
+              {error}
+            </p>
+          </div>
+        )}
 
       {/* Bottom right */}
-      {!loading && !error && holders.length > 0 && (
-        <div className="pointer-events-none absolute bottom-4 right-4 z-10 text-right sm:bottom-8 sm:right-8">
-          <div className="text-[9px] uppercase tracking-[0.16em] text-white/25 sm:text-[10px]">
-            Surface area
-          </div>
+      {!loading &&
+        !error &&
+        holders.length >
+          0 && (
+          <div className="pointer-events-none absolute bottom-4 right-4 z-10 text-right sm:bottom-8 sm:right-8">
+            <div className="text-[9px] uppercase tracking-[0.16em] text-white/25 sm:text-[10px]">
+              Surface area
+            </div>
 
-          <div className="mt-1 text-[10px] text-white/40 sm:text-xs">
-            Proportional to holdings
+            <div className="mt-1 text-[10px] text-white/40 sm:text-xs">
+              Proportional
+              to holdings
+            </div>
           </div>
-        </div>
-      )}
+        )}
     </main>
   );
 }
