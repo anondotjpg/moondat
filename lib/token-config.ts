@@ -1,5 +1,5 @@
 export const TOKEN_MINT =
-  "461C1ngHZtzTvMWT8gL7C2JLaYg2VQvaYj8aDFqhEni1";
+  "XXXXXXXXXXXXXXX";
 
 export const MIN_HOLDINGS = 100_000;
 
