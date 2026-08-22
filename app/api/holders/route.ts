@@ -643,7 +643,7 @@ export async function GET(
       return NextResponse.json(
         {
           error:
-            "Invalid Solana mint address.",
+            "Updating with Token CA",
         },
         {
           status: 400,
