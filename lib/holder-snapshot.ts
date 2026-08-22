@@ -5,10 +5,21 @@ import {
   MIN_HOLDINGS,
 } from "@/lib/token-config";
 
+/* -------------------------------------------------------------------------- */
+/*                              TOKEN PROGRAMS                                */
+/* -------------------------------------------------------------------------- */
+
 const TOKEN_PROGRAM_ID =
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
+const TOKEN_2022_PROGRAM_ID =
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
 const MAX_RETRIES = 4;
+
+/* -------------------------------------------------------------------------- */
+/*                                   TYPES                                    */
+/* -------------------------------------------------------------------------- */
 
 export type Holder = {
   address: string;
@@ -34,6 +45,30 @@ export type HolderSnapshot = {
   updatedAt: string;
 };
 
+type RpcResponse<T> = {
+  jsonrpc?: string;
+  id?: number;
+
+  result?: T;
+
+  error?: {
+    code?: number;
+    message?: string;
+    data?: unknown;
+  };
+};
+
+type MintAccountInfoResult = {
+  value: {
+    owner: string;
+
+    data: unknown;
+
+    executable: boolean;
+    lamports: number;
+  } | null;
+};
+
 type ParsedTokenAccount = {
   pubkey: string;
 
@@ -42,6 +77,8 @@ type ParsedTokenAccount = {
       program?: string;
 
       parsed?: {
+        type?: string;
+
         info?: {
           mint?: string;
 
@@ -50,7 +87,9 @@ type ParsedTokenAccount = {
           tokenAmount?: {
             amount?: string;
             decimals?: number;
+
             uiAmount?: number | null;
+
             uiAmountString?: string;
           };
         };
@@ -59,35 +98,43 @@ type ParsedTokenAccount = {
   };
 };
 
-type ProgramAccountsResponse = {
-  jsonrpc?: string;
-  id?: number;
+/* -------------------------------------------------------------------------- */
+/*                                  HELPERS                                   */
+/* -------------------------------------------------------------------------- */
 
-  result?: ParsedTokenAccount[];
-
-  error?: {
-    code?: number;
-    message?: string;
-  };
-};
-
-function sleep(ms: number) {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
+function sleep(
+  ms: number
+) {
+  return new Promise<void>(
+    (resolve) => {
+      setTimeout(
+        resolve,
+        ms
+      );
+    }
+  );
 }
 
-function getRetryDelay(attempt: number) {
+function getRetryDelay(
+  attempt: number
+) {
   return Math.min(
-    1000 * 2 ** attempt,
+    1000 *
+      2 ** attempt,
+
     15_000
   );
 }
 
-async function fetchProgramAccounts(
-  mint: string,
-  apiKey: string
-) {
+/* -------------------------------------------------------------------------- */
+/*                               HELIUS RPC                                   */
+/* -------------------------------------------------------------------------- */
+
+async function heliusRpc<T>(
+  apiKey: string,
+  method: string,
+  params: unknown[]
+): Promise<T> {
   const url =
     `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(
       apiKey
@@ -98,85 +145,75 @@ async function fetchProgramAccounts(
     attempt <= MAX_RETRIES;
     attempt++
   ) {
-    const response = await fetch(url, {
-      method: "POST",
+    const response =
+      await fetch(
+        url,
+        {
+          method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
-
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-
-        method: "getProgramAccounts",
-
-        params: [
-          TOKEN_PROGRAM_ID,
-
-          {
-            /*
-             * Gives us owner + properly adjusted
-             * uiAmountString directly.
-             */
-            encoding: "jsonParsed",
-
-            commitment: "confirmed",
-
-            filters: [
-              /*
-               * Standard SPL token account size.
-               */
-              {
-                dataSize: 165,
-              },
-
-              /*
-               * First 32 bytes of a token account
-               * are its mint.
-               */
-              {
-                memcmp: {
-                  offset: 0,
-                  bytes: mint,
-                },
-              },
-            ],
+          headers: {
+            "Content-Type":
+              "application/json",
           },
-        ],
-      }),
 
-      cache: "no-store",
-    });
+          body:
+            JSON.stringify({
+              jsonrpc:
+                "2.0",
 
+              id: 1,
+
+              method,
+
+              params,
+            }),
+
+          cache:
+            "no-store",
+        }
+      );
+
+    /*
+     * Retry transient RPC errors.
+     */
     if (
-      response.status === 429 ||
-      response.status === 500 ||
-      response.status === 502 ||
-      response.status === 503 ||
-      response.status === 504
+      response.status ===
+        429 ||
+      response.status ===
+        500 ||
+      response.status ===
+        502 ||
+      response.status ===
+        503 ||
+      response.status ===
+        504
     ) {
       if (
-        attempt >= MAX_RETRIES
+        attempt >=
+        MAX_RETRIES
       ) {
         throw new Error(
-          `Helius failed after retries (${response.status})`
+          `Helius ${method} failed after retries (${response.status})`
         );
       }
-
-      const retryAfter =
-        response.headers.get(
-          "retry-after"
-        );
 
       let delay =
         getRetryDelay(
           attempt
         );
 
-      if (retryAfter) {
+      const retryAfter =
+        response.headers.get(
+          "retry-after"
+        );
+
+      if (
+        retryAfter
+      ) {
         const seconds =
-          Number(retryAfter);
+          Number(
+            retryAfter
+          );
 
         if (
           Number.isFinite(
@@ -185,31 +222,38 @@ async function fetchProgramAccounts(
           seconds > 0
         ) {
           delay =
-            seconds * 1000;
+            seconds *
+            1000;
         }
       }
 
       console.warn(
-        `[holder-sync] Helius ${response.status}; retrying in ${delay}ms`
+        `[holder-sync] ${method} returned ${response.status}; retrying in ${delay}ms`
       );
 
-      await sleep(delay);
+      await sleep(
+        delay
+      );
 
       continue;
     }
 
-    if (!response.ok) {
+    if (
+      !response.ok
+    ) {
       const text =
         await response
           .text()
-          .catch(() => "");
+          .catch(
+            () => ""
+          );
 
       throw new Error(
-        `Helius request failed (${response.status})${
+        `Helius ${method} failed (${response.status})${
           text
             ? `: ${text.slice(
                 0,
-                300
+                500
               )}`
             : ""
         }`
@@ -217,22 +261,26 @@ async function fetchProgramAccounts(
     }
 
     const data =
-      (await response.json()) as ProgramAccountsResponse;
+      (await response.json()) as RpcResponse<T>;
 
-    if (data.error) {
+    if (
+      data.error
+    ) {
       throw new Error(
-        data.error.message ??
-          "Helius RPC error"
+        `Helius ${method}: ${
+          data.error
+            .message ??
+          "RPC error"
+        }`
       );
     }
 
     if (
-      !Array.isArray(
-        data.result
-      )
+      data.result ===
+      undefined
     ) {
       throw new Error(
-        "Helius returned an invalid getProgramAccounts response"
+        `Helius ${method} returned no result`
       );
     }
 
@@ -240,9 +288,162 @@ async function fetchProgramAccounts(
   }
 
   throw new Error(
-    "Unable to retrieve token accounts"
+    `Helius ${method} failed`
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*                        DETECT TOKEN PROGRAM                                */
+/* -------------------------------------------------------------------------- */
+
+async function getMintProgram(
+  mint: string,
+  apiKey: string
+) {
+  /*
+   * Ask Solana which program owns the mint itself.
+   *
+   * That tells us whether this token uses:
+   *
+   * - original SPL Token
+   * - Token-2022
+   */
+  const result =
+    await heliusRpc<MintAccountInfoResult>(
+      apiKey,
+
+      "getAccountInfo",
+
+      [
+        mint,
+
+        {
+          encoding:
+            "base64",
+
+          commitment:
+            "confirmed",
+        },
+      ]
+    );
+
+  if (
+    !result.value
+  ) {
+    throw new Error(
+      `Mint does not exist: ${mint}`
+    );
+  }
+
+  const owner =
+    result.value.owner;
+
+  console.log(
+    `[holder-sync] mint owner program: ${owner}`
+  );
+
+  if (
+    owner ===
+    TOKEN_PROGRAM_ID
+  ) {
+    console.log(
+      "[holder-sync] token type: SPL Token"
+    );
+
+    return owner;
+  }
+
+  if (
+    owner ===
+    TOKEN_2022_PROGRAM_ID
+  ) {
+    console.log(
+      "[holder-sync] token type: Token-2022"
+    );
+
+    return owner;
+  }
+
+  throw new Error(
+    `Unsupported mint owner program: ${owner}`
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                         GET ALL TOKEN ACCOUNTS                             */
+/* -------------------------------------------------------------------------- */
+
+async function fetchTokenAccounts(
+  mint: string,
+  programId: string,
+  apiKey: string
+) {
+  console.log(
+    `[holder-sync] querying program ${programId}`
+  );
+
+  const accounts =
+    await heliusRpc<
+      ParsedTokenAccount[]
+    >(
+      apiKey,
+
+      "getProgramAccounts",
+
+      [
+        programId,
+
+        {
+          encoding:
+            "jsonParsed",
+
+          commitment:
+            "confirmed",
+
+          filters: [
+            /*
+             * First 32 bytes of a token account
+             * contain the mint address.
+             *
+             * DO NOT add dataSize: 165 here.
+             *
+             * Token-2022 accounts may contain
+             * extensions and therefore be larger.
+             */
+            {
+              memcmp: {
+                offset: 0,
+                bytes: mint,
+              },
+            },
+          ],
+        },
+      ]
+    );
+
+  console.log(
+    `[holder-sync] received ${accounts.length} token accounts`
+  );
+
+  /*
+   * Do not let a malformed query erase an existing
+   * good Supabase snapshot.
+   */
+  if (
+    accounts.length ===
+    0
+  ) {
+    throw new Error(
+      `Helius returned 0 token accounts for ${mint}; refusing to store an empty snapshot`
+    );
+  }
+
+  return accounts;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                             TOKEN BALANCE                                  */
+/* -------------------------------------------------------------------------- */
 
 function getUiBalance(
   account: ParsedTokenAccount
@@ -252,22 +453,25 @@ function getUiBalance(
       .parsed?.info
       ?.tokenAmount;
 
-  if (!tokenAmount) {
+  if (
+    !tokenAmount
+  ) {
     return null;
   }
 
   /*
-   * Prefer uiAmountString.
-   *
-   * This has already accounted for token decimals.
+   * Best representation because it has already
+   * accounted for token decimals.
    */
   if (
-    typeof tokenAmount.uiAmountString ===
+    typeof tokenAmount
+      .uiAmountString ===
     "string"
   ) {
     const balance =
       Number(
-        tokenAmount.uiAmountString
+        tokenAmount
+          .uiAmountString
       );
 
     if (
@@ -280,18 +484,42 @@ function getUiBalance(
   }
 
   /*
-   * Fallback.
+   * Secondary parsed representation.
    */
   if (
-    typeof tokenAmount.amount ===
+    typeof tokenAmount
+      .uiAmount ===
+      "number" &&
+    Number.isFinite(
+      tokenAmount.uiAmount
+    )
+  ) {
+    return tokenAmount.uiAmount;
+  }
+
+  /*
+   * Raw integer fallback.
+   */
+  if (
+    typeof tokenAmount
+      .amount ===
       "string" &&
-    typeof tokenAmount.decimals ===
+    typeof tokenAmount
+      .decimals ===
       "number"
   ) {
     const raw =
       Number(
         tokenAmount.amount
       );
+
+    if (
+      !Number.isFinite(
+        raw
+      )
+    ) {
+      return null;
+    }
 
     const balance =
       raw /
@@ -310,6 +538,10 @@ function getUiBalance(
   return null;
 }
 
+/* -------------------------------------------------------------------------- */
+/*                           BUILD HOLDER SNAPSHOT                            */
+/* -------------------------------------------------------------------------- */
+
 export async function buildHolderSnapshot(
   mint: string
 ): Promise<HolderSnapshot> {
@@ -318,7 +550,9 @@ export async function buildHolderSnapshot(
       .HELIUS_API_KEY
       ?.trim();
 
-  if (!apiKey) {
+  if (
+    !apiKey
+  ) {
     throw new Error(
       "Missing HELIUS_API_KEY"
     );
@@ -328,37 +562,66 @@ export async function buildHolderSnapshot(
     `[holder-sync] syncing ${mint}`
   );
 
-  const tokenAccounts =
-    await fetchProgramAccounts(
+  /*
+   * Step 1:
+   *
+   * Detect SPL Token vs Token-2022.
+   */
+  const programId =
+    await getMintProgram(
       mint,
       apiKey
     );
 
-  console.log(
-    `[holder-sync] received ${tokenAccounts.length} token accounts`
-  );
+  /*
+   * Step 2:
+   *
+   * Find every token account for the mint.
+   */
+  const tokenAccounts =
+    await fetchTokenAccounts(
+      mint,
+      programId,
+      apiKey
+    );
 
   /*
-   * Multiple SPL token accounts can belong
-   * to one actual wallet.
+   * Step 3:
+   *
+   * Aggregate token accounts by wallet owner.
+   *
+   * A wallet can own multiple token accounts for
+   * the same mint, so we MUST combine them.
    */
-  const balances =
+  const walletBalances =
     new Map<
       string,
       number
     >();
 
+  let parsedAccounts =
+    0;
+
+  let skippedAccounts =
+    0;
+
   for (
-    const tokenAccount of tokenAccounts
+    const tokenAccount of
+    tokenAccounts
   ) {
     const info =
-      tokenAccount.account.data
-        .parsed?.info;
+      tokenAccount.account
+        .data.parsed
+        ?.info;
 
     const owner =
       info?.owner?.trim();
 
-    if (!owner) {
+    if (
+      !owner
+    ) {
+      skippedAccounts++;
+
       continue;
     }
 
@@ -371,26 +634,40 @@ export async function buildHolderSnapshot(
       balance === null ||
       balance <= 0
     ) {
+      skippedAccounts++;
+
       continue;
     }
 
-    balances.set(
+    parsedAccounts++;
+
+    walletBalances.set(
       owner,
 
       (
-        balances.get(
+        walletBalances.get(
           owner
-        ) ?? 0
-      ) + balance
+        ) ??
+        0
+      ) +
+        balance
     );
   }
 
+  console.log(
+    `[holder-sync] parsed ${parsedAccounts} positive token accounts`
+  );
+
+  console.log(
+    `[holder-sync] skipped ${skippedAccounts} empty/unparseable accounts`
+  );
+
   /*
-   * Largest -> smallest.
+   * Largest holder first.
    */
   const allHolders =
     Array.from(
-      balances.entries()
+      walletBalances.entries()
     )
       .map(
         ([
@@ -401,14 +678,35 @@ export async function buildHolderSnapshot(
           balance,
         })
       )
+      .filter(
+        (holder) =>
+          holder.balance >
+          0
+      )
       .sort(
         (a, b) =>
           b.balance -
           a.balance
       );
 
+  console.log(
+    `[holder-sync] ${allHolders.length} unique wallets`
+  );
+
   /*
-   * Your current rule:
+   * Second safety check.
+   */
+  if (
+    allHolders.length ===
+    0
+  ) {
+    throw new Error(
+      `No positive holder wallets parsed for ${mint}; refusing to overwrite stored snapshot`
+    );
+  }
+
+  /*
+   * Your rule:
    *
    * remove absolute largest holder.
    */
@@ -417,10 +715,12 @@ export async function buildHolderSnapshot(
     null;
 
   const withoutTop =
-    allHolders.slice(1);
+    allHolders.slice(
+      1
+    );
 
   /*
-   * Only holders > 100k.
+   * Only wallets holding >100,000 tokens.
    */
   const qualifying =
     withoutTop.filter(
@@ -430,7 +730,7 @@ export async function buildHolderSnapshot(
     );
 
   /*
-   * Only top 100.
+   * Moon shows maximum 100.
    */
   const holders =
     qualifying.slice(
@@ -450,10 +750,6 @@ export async function buildHolderSnapshot(
     );
 
   console.log(
-    `[holder-sync] ${allHolders.length} wallets`
-  );
-
-  console.log(
     `[holder-sync] ${qualifying.length} above ${MIN_HOLDINGS.toLocaleString()} after top-holder exclusion`
   );
 
@@ -468,6 +764,26 @@ export async function buildHolderSnapshot(
       `[holder-sync] removed top holder: ${excludedTopHolder.address} (${excludedTopHolder.balance.toLocaleString()})`
     );
   }
+
+  console.log(
+    "[holder-sync] top displayed holders:"
+  );
+
+  holders
+    .slice(
+      0,
+      10
+    )
+    .forEach(
+      (
+        holder,
+        index
+      ) => {
+        console.log(
+          `[holder-sync] #${index + 1} ${holder.address} — ${holder.balance.toLocaleString()}`
+        );
+      }
+    );
 
   return {
     mint,
