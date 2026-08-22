@@ -21,6 +21,10 @@ import * as THREE from "three";
 type Holder = {
   address: string;
   balance: number;
+
+  verified?: boolean;
+  message?: string | null;
+  verifiedAt?: string | null;
 };
 
 type MoonSceneProps = {
@@ -53,7 +57,10 @@ function clamp(
 ) {
   return Math.min(
     max,
-    Math.max(min, value)
+    Math.max(
+      min,
+      value
+    )
   );
 }
 
@@ -63,15 +70,22 @@ function seededRandom(
   const x =
     Math.sin(
       seed * 9999.91
-    ) * 43758.5453;
+    ) *
+    43758.5453;
 
-  return x - Math.floor(x);
+  return (
+    x -
+    Math.floor(x)
+  );
 }
 
 function abbreviateAddress(
   address: string
 ) {
-  return `${address.slice(0, 4)}…${address.slice(-4)}`;
+  return `${address.slice(
+    0,
+    4
+  )}…${address.slice(-4)}`;
 }
 
 function formatTokenAmount(
@@ -172,15 +186,18 @@ function drawPixelCrater(
       x++
     ) {
       const wrappedX =
-        ((x % canvasWidth) +
+        ((x %
+          canvasWidth) +
           canvasWidth) %
         canvasWidth;
 
       const dx =
-        x - centerX;
+        x -
+        centerX;
 
       const dy =
-        y - centerY;
+        y -
+        centerY;
 
       const angle =
         Math.atan2(
@@ -212,17 +229,23 @@ function drawPixelCrater(
         );
 
       if (
-        distance > 1
+        distance >
+        1
       ) {
         continue;
       }
 
+      /*
+       * Crater center.
+       */
       if (
-        distance < 0.52
+        distance <
+        0.52
       ) {
         const noise =
           seededRandom(
-            seed * 1000 +
+            seed *
+              1000 +
               x * 19 +
               y * 31
           );
@@ -242,8 +265,12 @@ function drawPixelCrater(
         continue;
       }
 
+      /*
+       * Inner wall.
+       */
       if (
-        distance < 0.7
+        distance <
+        0.7
       ) {
         ctx.fillStyle =
           MOON_PALETTE.dark;
@@ -258,11 +285,15 @@ function drawPixelCrater(
         continue;
       }
 
+      /*
+       * Pixel rim.
+       */
       const lightDirection =
         -dx - dy;
 
       if (
-        distance < 0.9
+        distance <
+        0.9
       ) {
         ctx.fillStyle =
           lightDirection >
@@ -281,7 +312,8 @@ function drawPixelCrater(
       }
 
       ctx.fillStyle =
-        lightDirection > 0
+        lightDirection >
+        0
           ? MOON_PALETTE.light
           : MOON_PALETTE.dark;
 
@@ -339,11 +371,17 @@ function drawPixelMaria(
       x++
     ) {
       const dx =
-        (x - centerX) /
+        (
+          x -
+          centerX
+        ) /
         radiusX;
 
       const dy =
-        (y - centerY) /
+        (
+          y -
+          centerY
+        ) /
         radiusY;
 
       const distortion =
@@ -364,25 +402,29 @@ function drawPixelMaria(
         distortion;
 
       if (
-        distance > 1
+        distance >
+        1
       ) {
         continue;
       }
 
       const wrappedX =
-        ((x % canvasWidth) +
+        ((x %
+          canvasWidth) +
           canvasWidth) %
         canvasWidth;
 
       const noise =
         seededRandom(
-          seed * 700 +
+          seed *
+            700 +
             x * 11 +
             y * 23
         );
 
       if (
-        noise < 0.3
+        noise <
+        0.3
       ) {
         continue;
       }
@@ -414,20 +456,30 @@ function createMoonTexture(
 
   /*
    * Deliberately low resolution.
+   *
+   * NearestFilter stretches these actual pixels
+   * across the sphere without smoothing them.
    */
   const width =
-    mobile ? 192 : 256;
+    mobile
+      ? 192
+      : 256;
 
   const height =
-    mobile ? 96 : 128;
+    mobile
+      ? 96
+      : 128;
 
   const canvas =
     document.createElement(
       "canvas"
     );
 
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width =
+    width;
+
+  canvas.height =
+    height;
 
   const ctx =
     canvas.getContext(
@@ -504,7 +556,7 @@ function createMoonTexture(
     }
   }
 
-  /* Maria */
+  /* Dark lunar regions */
 
   for (
     let i = 0;
@@ -514,31 +566,39 @@ function createMoonTexture(
     const centerX =
       Math.floor(
         seededRandom(
-          i * 13 + 2
-        ) * width
+          i * 13 +
+            2
+        ) *
+          width
       );
 
     const centerY =
       Math.floor(
         seededRandom(
-          i * 17 + 5
-        ) * height
+          i * 17 +
+            5
+        ) *
+          height
       );
 
     const radiusX =
       8 +
       Math.floor(
         seededRandom(
-          i * 23 + 7
-        ) * 22
+          i * 23 +
+            7
+        ) *
+          22
       );
 
     const radiusY =
       5 +
       Math.floor(
         seededRandom(
-          i * 29 + 11
-        ) * 13
+          i * 29 +
+            11
+        ) *
+          13
       );
 
     drawPixelMaria(
@@ -568,13 +628,16 @@ function createMoonTexture(
     const x =
       Math.floor(
         seededRandom(
-          i * 41 + 8
-        ) * width
+          i * 41 +
+            8
+        ) *
+          width
       );
 
     const y =
       Math.floor(
-        height * 0.12 +
+        height *
+          0.12 +
           seededRandom(
             i * 43 +
               10
@@ -589,7 +652,8 @@ function createMoonTexture(
         seededRandom(
           i * 47 +
             13
-        ) * 7
+        ) *
+          7
       );
 
     drawPixelCrater(
@@ -620,7 +684,8 @@ function createMoonTexture(
         seededRandom(
           i * 53 +
             17
-        ) * width
+        ) *
+          width
       );
 
     const y =
@@ -628,7 +693,8 @@ function createMoonTexture(
         seededRandom(
           i * 59 +
             19
-        ) * height
+        ) *
+          height
       );
 
     const radius =
@@ -637,7 +703,8 @@ function createMoonTexture(
         seededRandom(
           i * 61 +
             23
-        ) * 3
+        ) *
+          3
       );
 
     drawPixelCrater(
@@ -668,7 +735,8 @@ function createMoonTexture(
         seededRandom(
           i * 67 +
             31
-        ) * width
+        ) *
+          width
       );
 
     const y =
@@ -676,7 +744,8 @@ function createMoonTexture(
         seededRandom(
           i * 71 +
             37
-        ) * height
+        ) *
+          height
       );
 
     const radius =
@@ -821,10 +890,14 @@ function buildTreemap(
     }
 
     const half =
-      groupTotal / 2;
+      groupTotal /
+      2;
 
-    let running = 0;
-    let splitIndex = 1;
+    let running =
+      0;
+
+    let splitIndex =
+      1;
 
     let closest =
       Number.POSITIVE_INFINITY;
@@ -973,7 +1046,8 @@ function equalAreaToLatitude(
 ) {
   const sinLatitude =
     clamp(
-      s * 2 - 1,
+      s * 2 -
+        1,
       -1,
       1
     );
@@ -1049,21 +1123,6 @@ function territoryCenterPosition(
 /*                           UV -> HOLDER LOOKUP                              */
 /* -------------------------------------------------------------------------- */
 
-/*
- * SphereGeometry's UV.v is linear latitude.
- *
- * Our treemap's s coordinate is equal-area.
- *
- * Convert:
- *
- * UV v
- *   ↓
- * latitude
- *   ↓
- * sin(latitude)
- *   ↓
- * equal-area s
- */
 function uvToEqualAreaS(
   v: number
 ) {
@@ -1077,7 +1136,8 @@ function uvToEqualAreaS(
   const latitude =
     normalizedV *
       Math.PI -
-    Math.PI / 2;
+    Math.PI /
+      2;
 
   return (
     Math.sin(
@@ -1093,7 +1153,8 @@ function getTerritoryAtUv(
   territories: Territory[]
 ) {
   const normalizedU =
-    ((u % 1) + 1) %
+    ((u % 1) +
+      1) %
     1;
 
   const s =
@@ -1103,7 +1164,9 @@ function getTerritoryAtUv(
 
   return (
     territories.find(
-      (territory) => {
+      (
+        territory
+      ) => {
         const insideU =
           normalizedU >=
             territory.u0 &&
@@ -1129,12 +1192,13 @@ function getTerritoryAtUv(
           insideS
         );
       }
-    ) ?? null
+    ) ??
+    null
   );
 }
 
 /* -------------------------------------------------------------------------- */
-/*                               HOLDER LABEL                                 */
+/*                               LABEL TEXTURE                                */
 /* -------------------------------------------------------------------------- */
 
 function makeLabelTexture(
@@ -1157,8 +1221,11 @@ function makeLabelTexture(
       "canvas"
     );
 
-  canvas.width = 1024;
-  canvas.height = 256;
+  canvas.width =
+    1024;
+
+  canvas.height =
+    256;
 
   const ctx =
     canvas.getContext(
@@ -1183,8 +1250,7 @@ function makeLabelTexture(
     "middle";
 
   /*
-   * Uses the same font currently applied to the page,
-   * including Pixelify Sans when your layout applies it.
+   * Pick up your page-level Pixelify Sans font.
    */
   const pageFont =
     window.getComputedStyle(
@@ -1197,15 +1263,18 @@ function makeLabelTexture(
   ctx.shadowColor =
     "rgba(0,0,0,0.95)";
 
-  ctx.shadowBlur = 18;
+  ctx.shadowBlur =
+    18;
 
   ctx.fillStyle =
     "rgba(255,255,255,0.96)";
 
   ctx.fillText(
     text,
-    canvas.width / 2,
-    canvas.height / 2
+    canvas.width /
+      2,
+    canvas.height /
+      2
   );
 
   const texture =
@@ -1225,6 +1294,10 @@ function makeLabelTexture(
   return texture;
 }
 
+/* -------------------------------------------------------------------------- */
+/*                              HOLDER LABEL                                  */
+/* -------------------------------------------------------------------------- */
+
 type HolderLabelProps = {
   territory: Territory;
   largestShare: number;
@@ -1240,14 +1313,24 @@ function HolderLabel({
     useMemo(
       () =>
         makeLabelTexture(
-          territory.holder
+          territory
+            .holder
             .address
         ),
       [
-        territory.holder
+        territory
+          .holder
           .address,
       ]
     );
+
+  useEffect(() => {
+    return () => {
+      texture?.dispose();
+    };
+  }, [
+    texture,
+  ]);
 
   const position =
     useMemo(
@@ -1255,7 +1338,9 @@ function HolderLabel({
         territoryCenterPosition(
           territory
         ),
-      [territory]
+      [
+        territory,
+      ]
     );
 
   const quaternion =
@@ -1278,7 +1363,9 @@ function HolderLabel({
       );
 
       return q;
-    }, [position]);
+    }, [
+      position,
+    ]);
 
   if (!texture) {
     return null;
@@ -1327,11 +1414,12 @@ function HolderLabel({
     <mesh
       /*
        * Important:
-       * labels cannot steal mouse events from
-       * the actual moon surface.
+       * labels never intercept moon hover events.
        */
       raycast={() => {}}
-      position={position}
+      position={
+        position
+      }
       quaternion={
         quaternion
       }
@@ -1345,22 +1433,30 @@ function HolderLabel({
       />
 
       <meshBasicMaterial
-        map={texture}
+        map={
+          texture
+        }
         transparent
-        alphaTest={0.03}
+        alphaTest={
+          0.03
+        }
         depthTest
-        depthWrite={false}
+        depthWrite={
+          false
+        }
         side={
           THREE.DoubleSide
         }
-        toneMapped={false}
+        toneMapped={
+          false
+        }
       />
     </mesh>
   );
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                TOOLTIP                                     */
+/*                              HOLDER TOOLTIP                                */
 /* -------------------------------------------------------------------------- */
 
 function HolderTooltip({
@@ -1375,7 +1471,9 @@ function HolderTooltip({
           territory,
           TOOLTIP_RADIUS
         ),
-      [territory]
+      [
+        territory,
+      ]
     );
 
   return (
@@ -1394,18 +1492,48 @@ function HolderTooltip({
           "none",
       }}
     >
-      <div className="w-max min-w-[170px] max-w-[260px] rounded-lg border border-white/10 bg-black/90 px-3 py-2 text-white shadow-xl backdrop-blur-md">
+      <div className="w-max min-w-[180px] max-w-[270px] rounded-xl border border-white/10 bg-black/90 px-3 py-2.5 text-white shadow-2xl backdrop-blur-md">
         <div className="text-[9px] uppercase tracking-[0.14em] text-white/35">
           Holder
         </div>
 
-        <div className="mt-1 max-w-[230px] break-all text-[11px] leading-4 text-white">
+        <div className="mt-1 max-w-[240px] break-all text-[11px] leading-4 text-white">
           {
             territory
               .holder
               .address
           }
         </div>
+
+        {/* Verified holder message */}
+        {territory
+          .holder
+          .verified &&
+          territory
+            .holder
+            .message && (
+            <div className="mt-2 border-t border-white/10 pt-2">
+              <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-[0.12em] text-white/45">
+                <span>
+                  ✓
+                </span>
+
+                <span>
+                  Verified holder
+                </span>
+              </div>
+
+              <div className="mt-1.5 max-w-[240px] break-words text-xs leading-4 text-white/80">
+                “
+                {
+                  territory
+                    .holder
+                    .message
+                }
+                ”
+              </div>
+            </div>
+          )}
 
         <div className="mt-2 flex items-end justify-between gap-6 border-t border-white/10 pt-2">
           <div>
@@ -1431,7 +1559,9 @@ function HolderTooltip({
               {(
                 territory.share *
                 100
-              ).toFixed(2)}
+              ).toFixed(
+                2
+              )}
               %
             </div>
           </div>
@@ -1449,8 +1579,11 @@ function AutoSpin({
   children,
   paused,
 }: {
-  children: ReactNode;
-  paused: boolean;
+  children:
+    ReactNode;
+
+  paused:
+    boolean;
 }) {
   const group =
     useRef<THREE.Group>(
@@ -1461,7 +1594,10 @@ function AutoSpin({
     useRef(0);
 
   useFrame(
-    (_, delta) => {
+    (
+      _,
+      delta
+    ) => {
       if (
         !group.current
       ) {
@@ -1469,9 +1605,12 @@ function AutoSpin({
       }
 
       /*
-       * Freeze while inspecting a holder.
+       * Keep holder under cursor stationary while
+       * tooltip is being inspected.
        */
-      if (paused) {
+      if (
+        paused
+      ) {
         return;
       }
 
@@ -1482,25 +1621,32 @@ function AutoSpin({
         elapsed.current;
 
       group.current.rotation.y =
-        t * 0.115;
+        t *
+        0.115;
 
       group.current.rotation.x =
         0.08 +
         Math.sin(
-          t * 0.09
+          t *
+            0.09
         ) *
           0.82;
 
       group.current.rotation.z =
         Math.sin(
-          t * 0.057
+          t *
+            0.057
         ) *
         0.09;
     }
   );
 
   return (
-    <group ref={group}>
+    <group
+      ref={
+        group
+      }
+    >
       {children}
     </group>
   );
@@ -1514,7 +1660,8 @@ function ResponsiveCamera() {
   const {
     camera,
     size,
-  } = useThree();
+  } =
+    useThree();
 
   useEffect(() => {
     const perspective =
@@ -1555,7 +1702,8 @@ function Moon({
 }: MoonSceneProps) {
   const {
     size,
-  } = useThree();
+  } =
+    useThree();
 
   const mobile =
     size.width <
@@ -1570,7 +1718,9 @@ function Moon({
             100
           )
         ),
-      [holders]
+      [
+        holders,
+      ]
     );
 
   const largestShare =
@@ -1585,7 +1735,9 @@ function Moon({
           ),
           0
         ),
-      [territories]
+      [
+        territories,
+      ]
     );
 
   const [
@@ -1625,7 +1777,9 @@ function Moon({
     return () => {
       texture?.dispose();
     };
-  }, [mobile]);
+  }, [
+    mobile,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -1634,8 +1788,72 @@ function Moon({
     };
   }, []);
 
+  /*
+   * If holder data refreshes, update the currently
+   * hovered/pinned Territory object too so a newly
+   * verified message can appear immediately.
+   */
+  useEffect(() => {
+    setHovered(
+      (
+        current
+      ) => {
+        if (
+          !current
+        ) {
+          return null;
+        }
+
+        return (
+          territories.find(
+            (
+              territory
+            ) =>
+              territory
+                .holder
+                .address ===
+              current
+                .holder
+                .address
+          ) ??
+          null
+        );
+      }
+    );
+
+    setPinned(
+      (
+        current
+      ) => {
+        if (
+          !current
+        ) {
+          return null;
+        }
+
+        return (
+          territories.find(
+            (
+              territory
+            ) =>
+              territory
+                .holder
+                .address ===
+              current
+                .holder
+                .address
+          ) ??
+          null
+        );
+      }
+    );
+  }, [
+    territories,
+  ]);
+
   const activeTerritory =
-    hovered ?? pinned;
+    hovered ??
+    pinned;
 
   const segments =
     mobile
@@ -1649,14 +1867,16 @@ function Moon({
         null
       }
     >
-      {/* Actual moon is now the ONLY hover surface */}
+      {/* Actual moon is the only interactive/raycast surface */}
       <mesh
         onPointerMove={(
           event
         ) => {
           event.stopPropagation();
 
-          if (!event.uv) {
+          if (
+            !event.uv
+          ) {
             return;
           }
 
@@ -1668,10 +1888,14 @@ function Moon({
             );
 
           setHovered(
-            (current) =>
-              current?.holder
+            (
+              current
+            ) =>
+              current
+                ?.holder
                 .address ===
-              territory?.holder
+              territory
+                ?.holder
                 .address
                 ? current
                 : territory
@@ -1683,7 +1907,9 @@ function Moon({
               : "";
         }}
         onPointerOut={() => {
-          setHovered(null);
+          setHovered(
+            null
+          );
 
           document.body.style.cursor =
             "";
@@ -1693,7 +1919,9 @@ function Moon({
         ) => {
           event.stopPropagation();
 
-          if (!event.uv) {
+          if (
+            !event.uv
+          ) {
             return;
           }
 
@@ -1704,23 +1932,29 @@ function Moon({
               territories
             );
 
-          if (!territory) {
-            setPinned(null);
+          if (
+            !territory
+          ) {
+            setPinned(
+              null
+            );
+
             return;
           }
 
           /*
-           * Desktop:
-           * clicking can pin the tooltip.
-           *
-           * Mobile:
-           * tapping gives the same behavior.
+           * Useful on mobile:
+           * tap once to pin, tap same region again to close.
            */
           setPinned(
-            (current) =>
-              current?.holder
+            (
+              current
+            ) =>
+              current
+                ?.holder
                 .address ===
-              territory.holder
+              territory
+                .holder
                 .address
                 ? null
                 : territory
@@ -1744,14 +1978,20 @@ function Moon({
             moonTexture ??
             undefined
           }
-          bumpScale={0.025}
-          roughness={1}
-          metalness={0}
+          bumpScale={
+            0.025
+          }
+          roughness={
+            1
+          }
+          metalness={
+            0
+          }
           color="#b6b6b6"
         />
       </mesh>
 
-      {/* Tooltip */}
+      {/* Holder tooltip */}
       {activeTerritory && (
         <HolderTooltip
           territory={
@@ -1760,7 +2000,7 @@ function Moon({
         />
       )}
 
-      {/* Visible wallet labels */}
+      {/* Surface wallet labels */}
       {territories.map(
         (
           territory
@@ -1796,7 +2036,8 @@ function SceneContent({
 }: MoonSceneProps) {
   const {
     size,
-  } = useThree();
+  } =
+    useThree();
 
   const mobile =
     size.width <
@@ -1807,7 +2048,9 @@ function SceneContent({
       <ResponsiveCamera />
 
       <ambientLight
-        intensity={0.08}
+        intensity={
+          0.08
+        }
       />
 
       <directionalLight
@@ -1816,7 +2059,9 @@ function SceneContent({
           3,
           5,
         ]}
-        intensity={3.15}
+        intensity={
+          3.15
+        }
       />
 
       <directionalLight
@@ -1825,16 +2070,24 @@ function SceneContent({
           -1,
           -3,
         ]}
-        intensity={0.12}
+        intensity={
+          0.12
+        }
       />
 
       <Moon
-        holders={holders}
+        holders={
+          holders
+        }
       />
 
       <Stars
-        radius={60}
-        depth={30}
+        radius={
+          60
+        }
+        depth={
+          30
+        }
         count={
           mobile
             ? 550
@@ -1845,9 +2098,13 @@ function SceneContent({
             ? 1.1
             : 1.35
         }
-        saturation={0}
+        saturation={
+          0
+        }
         fade
-        speed={0.025}
+        speed={
+          0.025
+        }
       />
     </>
   );
@@ -1872,13 +2129,23 @@ export default function MoonScene({
           0,
           7.5,
         ],
-        fov: 38,
-        near: 0.1,
-        far: 100,
+
+        fov:
+          38,
+
+        near:
+          0.1,
+
+        far:
+          100,
       }}
       gl={{
-        antialias: true,
-        alpha: false,
+        antialias:
+          true,
+
+        alpha:
+          false,
+
         powerPreference:
           "high-performance",
       }}
@@ -1891,7 +2158,9 @@ export default function MoonScene({
       />
 
       <SceneContent
-        holders={holders}
+        holders={
+          holders
+        }
       />
     </Canvas>
   );
