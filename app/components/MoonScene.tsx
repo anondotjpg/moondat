@@ -15,7 +15,6 @@ import {
 } from "@react-three/fiber";
 import {
   Html,
-  Sparkles,
 } from "@react-three/drei";
 import * as THREE from "three";
 
@@ -37,66 +36,62 @@ type Territory = {
 
   rank: number;
   share: number;
+
   ring: number;
 
   /*
-   * Angular position.
-   *
-   * Can intentionally go above 1 because
-   * the mapping wraps naturally around 2π.
+   * Angular ownership around the hill.
+   * May exceed 1 because it naturally wraps.
    */
   u0: number;
   u1: number;
 
   /*
-   * Normalized cumulative REAL hill
-   * surface area from summit -> base.
+   * Cumulative REAL hill surface area.
    *
    * 0 = summit
-   * 1 = bottom edge
+   * 1 = bottom
    */
   a0: number;
   a1: number;
 };
 
 /* -------------------------------------------------------------------------- */
-/*                                  CONFIG                                    */
+/*                                   CONFIG                                   */
 /* -------------------------------------------------------------------------- */
 
 const HILL_RADIUS = 5.15;
-const HILL_HEIGHT = 3.05;
-const HILL_BASE_Y = -2.5;
+const HILL_HEIGHT = 3.15;
+const HILL_BASE_Y = -2.55;
 
-const PATCH_LIFT = 0.014;
-const BORDER_LIFT = 0.031;
-const LABEL_LIFT = 0.048;
-const TOOLTIP_LIFT = 0.22;
+const PATCH_LIFT = 0.012;
+const LINE_LIFT = 0.033;
+const LABEL_LIFT = 0.052;
+const TOOLTIP_LIFT = 0.2;
 
-const PUMP_GREEN = "#55f58a";
-const PUMP_GREEN_BRIGHT = "#adffc4";
-const PUMP_GREEN_DARK = "#153c24";
-const PUMP_GREEN_DEEP = "#06130a";
+const PUMP_GREEN =
+  "#54f287";
 
-/*
- * 99 holders below #1.
- *
- * Each row becomes one clean concentric
- * band around the hill.
- *
- * 4 + 6 + 9 + 12 + 16 + 22 + 30 = 99
- */
-const RING_COUNTS = [
-  4,
-  6,
-  9,
-  12,
-  16,
-  22,
-  30,
+const PUMP_GREEN_BRIGHT =
+  "#b0ffc7";
+
+const PUMP_GREEN_DEEP =
+  "#041109";
+
+const PIXEL_GREEN_PALETTE = [
+  "#4be47b",
+  "#3acb6b",
+  "#2daf5d",
+  "#258f50",
+  "#1d7442",
+  "#175b35",
+  "#12482b",
+  "#0e3923",
+  "#0b2d1c",
 ];
 
 /* -------------------------------------------------------------------------- */
-/*                                  HELPERS                                   */
+/*                                   HELPERS                                  */
 /* -------------------------------------------------------------------------- */
 
 function clamp(
@@ -111,21 +106,6 @@ function clamp(
       value
     )
   );
-}
-
-function abbreviateAddress(
-  address: string
-) {
-  if (
-    address.length < 10
-  ) {
-    return address;
-  }
-
-  return `${address.slice(
-    0,
-    4
-  )}…${address.slice(-4)}`;
 }
 
 function formatTokenAmount(
@@ -166,30 +146,72 @@ function formatTokenAmount(
   ).toLocaleString();
 }
 
+function makeAddressLabel(
+  address: string,
+  availableWidth: number,
+  king: boolean
+) {
+  if (
+    king ||
+    availableWidth >
+      1.25
+  ) {
+    return `${address.slice(
+      0,
+      6
+    )}…${address.slice(-6)}`;
+  }
+
+  if (
+    availableWidth >
+    0.9
+  ) {
+    return `${address.slice(
+      0,
+      5
+    )}…${address.slice(-5)}`;
+  }
+
+  if (
+    availableWidth >
+    0.55
+  ) {
+    return `${address.slice(
+      0,
+      4
+    )}…${address.slice(-4)}`;
+  }
+
+  return `${address.slice(
+    0,
+    3
+  )}…${address.slice(-3)}`;
+}
+
 /* -------------------------------------------------------------------------- */
-/*                              ACTUAL HILL                                   */
+/*                              REAL HILL PROFILE                             */
 /* -------------------------------------------------------------------------- */
 
 /*
- * This is a real smooth mound profile.
- *
- * Not a sphere / hemisphere.
- *
- * smoothstep gives:
- *
- * - flat rounded summit
- * - natural shoulder
- * - smooth broad slope
- * - slope approaches zero at the base
+ * Smooth game-level hill:
  *
  *
- * side silhouette:
+ *                       ___
+ *                   ___/   \___
+ *                __/           \__
+ *             __/                 \__
+ *         ___/                       \___
+ * _______/                               \_______
  *
- *                  ______
- *              ___/      \___
- *           __/              \__
- *        __/                    \__
- * _____/                          \_____
+ *
+ * It's NOT spherical.
+ *
+ * Smoothstep gives:
+ *
+ * - flat-ish summit
+ * - curved shoulder
+ * - broad slope
+ * - flattening at base
  */
 function hillHeightAtRadius(
   radius: number
@@ -202,7 +224,7 @@ function hillHeightAtRadius(
       1
     );
 
-  const smooth =
+  const smoothstep =
     t *
     t *
     (
@@ -215,16 +237,11 @@ function hillHeightAtRadius(
     HILL_HEIGHT *
       (
         1 -
-        smooth
+        smoothstep
       )
   );
 }
 
-/*
- * derivative of:
- *
- * H * (1 - 3t² + 2t³)
- */
 function hillDerivative(
   radius: number
 ) {
@@ -240,7 +257,9 @@ function hillDerivative(
     HILL_HEIGHT *
     (
       -6 * t +
-      6 * t * t
+      6 *
+        t *
+        t
     ) /
     HILL_RADIUS
   );
@@ -271,21 +290,17 @@ function hillNormal(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                        REAL SURFACE AREA MAPPING                           */
+/*                        REAL SURFACE AREA LOOKUP                            */
 /* -------------------------------------------------------------------------- */
 
 /*
- * For a radial surface:
+ * Surface of revolution:
  *
- * dA = 2π r sqrt(1 + y'(r)^2) dr
+ * dA ∝ r * sqrt(1 + y'(r)^2) dr
  *
- * We numerically integrate it once.
- *
- * This is important:
- *
- * A holder with 5% ownership gets
- * EXACTLY 5% of the hill's curved
- * surface area.
+ * This lookup lets us allocate the REAL curved
+ * hill surface proportionally instead of just
+ * splitting a flat 2D circle.
  */
 
 const AREA_STEPS = 1800;
@@ -308,8 +323,11 @@ function buildAreaLookup() {
     0;
 
   raw.push({
-    radius: 0,
-    area: 0,
+    radius:
+      0,
+
+    area:
+      0,
   });
 
   for (
@@ -362,6 +380,7 @@ function buildAreaLookup() {
 
     raw.push({
       radius,
+
       area:
         cumulative,
     });
@@ -471,17 +490,17 @@ function areaFractionToRadius(
       upperIndex
     ];
 
-  const range =
+  const span =
     upper.fraction -
     lower.fraction;
 
   const t =
-    range > 0
+    span > 0
       ? (
           target -
           lower.fraction
         ) /
-        range
+        span
       : 0;
 
   return THREE.MathUtils.lerp(
@@ -491,8 +510,37 @@ function areaFractionToRadius(
   );
 }
 
+function radiusToAreaFraction(
+  radius: number
+) {
+  const normalizedRadius =
+    clamp(
+      radius,
+      0,
+      HILL_RADIUS
+    );
+
+  const approximateIndex =
+    Math.round(
+      (
+        normalizedRadius /
+        HILL_RADIUS
+      ) *
+        AREA_STEPS
+    );
+
+  return AREA_LOOKUP[
+    clamp(
+      approximateIndex,
+      0,
+      AREA_LOOKUP.length -
+        1
+    )
+  ].fraction;
+}
+
 /* -------------------------------------------------------------------------- */
-/*                           SURFACE POSITION                                 */
+/*                             SURFACE POSITION                               */
 /* -------------------------------------------------------------------------- */
 
 function hillSurfacePosition(
@@ -546,20 +594,17 @@ function hillSurfacePosition(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                            TANGENT FRAME                                   */
+/*                          FLAT-ON-HILL ORIENTATION                          */
 /* -------------------------------------------------------------------------- */
 
 /*
- * Builds a local coordinate frame directly
- * against the hill.
- *
- * X = across the hill
+ * X = around the hill
  * Y = uphill
- * Z = outward normal
+ * Z = normal out of terrain
  *
- * This is what makes the address text lie
- * FLAT against the terrain instead of
- * floating / billboard-facing the camera.
+ * Labels use this instead of billboarding toward
+ * the camera, so they actually look printed onto
+ * the hill surface.
  */
 function hillSurfaceQuaternion(
   u: number,
@@ -594,10 +639,6 @@ function hillSurfaceQuaternion(
       )
     ).normalize();
 
-  /*
-   * Negative radial tangent =
-   * direction pointing uphill.
-   */
   const uphill =
     new THREE.Vector3(
       -Math.sin(
@@ -635,37 +676,44 @@ function hillSurfaceQuaternion(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                         CLEAN SURFACE DIVISION                             */
+/*                         ADAPTIVE TERRITORY RINGS                           */
 /* -------------------------------------------------------------------------- */
 
 /*
- * Instead of recursive random rectangles,
- * the hill is now divided like a clean
- * topographical / land-ownership map.
+ * This is the important divvy-up improvement.
  *
+ * #1:
+ *      owns a circular summit cap.
  *
- *           [ #1 summit cap ]
+ * Everyone else:
+ *      sorted largest -> smallest downhill.
  *
- *       [ #2 ][ #3 ][ #4 ][ #5 ]
+ * Instead of arbitrary counts like:
  *
- *     [        next clean ring        ]
+ *      4 / 6 / 9 / 12 / ...
  *
- *   [             next ring             ]
+ * we create physically even terrain bands first.
  *
- * [                 base ring               ]
+ * Then we choose the holder boundary closest to
+ * each desired terrain-band boundary.
  *
+ * That means:
  *
- * Every ring receives exactly the combined
- * surface-area share of its holders.
+ * - bands remain visually balanced
+ * - larger holders remain uphill
+ * - tiny holders naturally accumulate lower
+ * - no insane giant/thin random rectangles
  *
- * Within that ring, angular width is
- * proportional to each holder balance.
+ * Within every band:
  *
- * Therefore:
+ * angularWidth =
+ * holderBalance / totalBalanceInBand
  *
- * ring area × angular share
+ * Because the band's surface area equals the
+ * exact combined share of those holders:
  *
- * = exact holder surface area.
+ * bandArea × angularShare
+ * = holder's exact overall share.
  */
 function buildTerritories(
   holders: Holder[]
@@ -693,7 +741,8 @@ function buildTerritories(
       );
 
   if (
-    sorted.length === 0
+    sorted.length ===
+    0
   ) {
     return [];
   }
@@ -715,7 +764,7 @@ function buildTerritories(
     return [];
   }
 
-  const territories:
+  const result:
     Territory[] = [];
 
   /* ---------------------------------------------------------------------- */
@@ -729,10 +778,7 @@ function buildTerritories(
     king.balance /
     total;
 
-  /*
-   * #1 gets a true circular summit.
-   */
-  territories.push({
+  result.push({
     holder:
       king,
 
@@ -758,50 +804,276 @@ function buildTerritories(
       kingShare,
   });
 
+  const remaining =
+    sorted.slice(
+      1
+    );
+
+  if (
+    remaining.length ===
+    0
+  ) {
+    return result;
+  }
+
+  /*
+   * Adaptive number of terrain bands.
+   */
+  const desiredRingCount =
+    clamp(
+      Math.ceil(
+        remaining.length /
+          13
+      ),
+      4,
+      8
+    );
+
+  const kingRadius =
+    areaFractionToRadius(
+      kingShare
+    );
+
+  /*
+   * Create physically evenly-spaced target
+   * radii between king cap and outer base.
+   */
+  const targetAreaBoundaries:
+    number[] = [];
+
+  for (
+    let index = 1;
+    index <=
+    desiredRingCount;
+    index++
+  ) {
+    if (
+      index ===
+      desiredRingCount
+    ) {
+      targetAreaBoundaries.push(
+        1
+      );
+
+      continue;
+    }
+
+    const t =
+      index /
+      desiredRingCount;
+
+    /*
+     * Slight ease makes inner bands a bit
+     * thicker, which gives top wallets more
+     * room for their address.
+     */
+    const eased =
+      Math.pow(
+        t,
+        0.88
+      );
+
+    const radius =
+      THREE.MathUtils.lerp(
+        kingRadius,
+        HILL_RADIUS,
+        eased
+      );
+
+    targetAreaBoundaries.push(
+      radiusToAreaFraction(
+        radius
+      )
+    );
+  }
+
   let holderCursor =
-    1;
+    0;
 
-  let areaCursor =
+  let currentArea =
     kingShare;
-
-  /* ---------------------------------------------------------------------- */
-  /* Rings                                                                  */
-  /* ---------------------------------------------------------------------- */
 
   for (
     let ringIndex = 0;
     ringIndex <
-    RING_COUNTS.length;
+    desiredRingCount;
     ringIndex++
   ) {
     if (
       holderCursor >=
-      sorted.length
+      remaining.length
     ) {
       break;
     }
 
-    const desiredCount =
-      RING_COUNTS[
+    const lastRing =
+      ringIndex ===
+      desiredRingCount -
+        1;
+
+    const ringsAfter =
+      desiredRingCount -
+      ringIndex -
+      1;
+
+    const targetArea =
+      targetAreaBoundaries[
         ringIndex
       ];
 
-    const ringHolders =
-      sorted.slice(
-        holderCursor,
-        Math.min(
-          holderCursor +
-            desiredCount,
-          sorted.length
-        )
-      );
+    const ringHolders:
+      Holder[] = [];
+
+    let ringShare =
+      0;
 
     if (
-      ringHolders.length ===
-      0
+      lastRing
     ) {
-      break;
+      while (
+        holderCursor <
+        remaining.length
+      ) {
+        const holder =
+          remaining[
+            holderCursor
+          ];
+
+        ringHolders.push(
+          holder
+        );
+
+        ringShare +=
+          holder.balance /
+          total;
+
+        holderCursor++;
+      }
+    } else {
+      while (
+        holderCursor <
+        remaining.length
+      ) {
+        /*
+         * Always leave at least one wallet
+         * for every future ring.
+         */
+        const holdersRemaining =
+          remaining.length -
+          holderCursor;
+
+        if (
+          holdersRemaining <=
+          ringsAfter
+        ) {
+          break;
+        }
+
+        const next =
+          remaining[
+            holderCursor
+          ];
+
+        const nextShare =
+          next.balance /
+          total;
+
+        /*
+         * First wallet always goes into ring.
+         */
+        if (
+          ringHolders.length ===
+          0
+        ) {
+          ringHolders.push(
+            next
+          );
+
+          ringShare +=
+            nextShare;
+
+          holderCursor++;
+
+          continue;
+        }
+
+        const before =
+          Math.abs(
+            (
+              currentArea +
+              ringShare
+            ) -
+              targetArea
+          );
+
+        const after =
+          Math.abs(
+            (
+              currentArea +
+              ringShare +
+              nextShare
+            ) -
+              targetArea
+          );
+
+        /*
+         * Once adding the next holder makes the
+         * physical band boundary worse, stop.
+         */
+        if (
+          currentArea +
+            ringShare >=
+            targetArea ||
+          after > before
+        ) {
+          break;
+        }
+
+        ringHolders.push(
+          next
+        );
+
+        ringShare +=
+          nextShare;
+
+        holderCursor++;
+      }
     }
+
+    /*
+     * Safety fallback.
+     */
+    if (
+      ringHolders.length ===
+      0 &&
+      holderCursor <
+        remaining.length
+    ) {
+      const next =
+        remaining[
+          holderCursor
+        ];
+
+      ringHolders.push(
+        next
+      );
+
+      ringShare =
+        next.balance /
+        total;
+
+      holderCursor++;
+    }
+
+    const a0 =
+      currentArea;
+
+    const a1 =
+      Math.min(
+        1,
+        currentArea +
+          ringShare
+      );
 
     const ringBalance =
       ringHolders.reduce(
@@ -814,35 +1086,22 @@ function buildTerritories(
         0
       );
 
-    const ringShare =
-      ringBalance /
-      total;
-
-    const ringA0 =
-      areaCursor;
-
-    const ringA1 =
-      Math.min(
-        1,
-        areaCursor +
-          ringShare
-      );
-
     /*
-     * Stagger every ring so boundaries
-     * don't line up into ugly vertical
-     * longitude seams.
+     * Golden-ratio-ish rotation means neighboring
+     * bands do not stack their seams vertically.
+     *
+     * Looks much more like game-world land plots.
      */
-    const angularOffset =
+    const offset =
       (
-        0.08 +
+        0.09 +
         ringIndex *
-          0.137
+          0.173
       ) %
       1;
 
-    let angularCursor =
-      angularOffset;
+    let u =
+      offset;
 
     for (
       let localIndex = 0;
@@ -856,17 +1115,14 @@ function buildTerritories(
         ];
 
       const angularShare =
-        ringBalance > 0
-          ? holder.balance /
-            ringBalance
-          : 0;
+        holder.balance /
+        ringBalance;
 
-      territories.push({
+      result.push({
         holder,
 
         rank:
-          holderCursor +
-          localIndex +
+          result.length +
           1,
 
         share:
@@ -878,123 +1134,63 @@ function buildTerritories(
           1,
 
         u0:
-          angularCursor,
+          u,
 
         u1:
-          angularCursor +
+          u +
           angularShare,
 
-        a0:
-          ringA0,
-
-        a1:
-          ringA1,
+        a0,
+        a1,
       });
 
-      angularCursor +=
+      u +=
         angularShare;
     }
 
-    holderCursor +=
-      ringHolders.length;
-
-    areaCursor =
-      ringA1;
+    currentArea =
+      a1;
   }
 
-  /*
-   * Safety fallback in case holder count
-   * ever exceeds the current ring plan.
-   */
-  if (
-    holderCursor <
-    sorted.length
-  ) {
-    const leftovers =
-      sorted.slice(
-        holderCursor
-      );
-
-    const leftoverBalance =
-      leftovers.reduce(
-        (
-          sum,
-          holder
-        ) =>
-          sum +
-          holder.balance,
-        0
-      );
-
-    let u =
-      0.11;
-
-    leftovers.forEach(
-      (
-        holder,
-        index
-      ) => {
-        const angularShare =
-          holder.balance /
-          leftoverBalance;
-
-        territories.push({
-          holder,
-
-          rank:
-            holderCursor +
-            index +
-            1,
-
-          share:
-            holder.balance /
-            total,
-
-          ring:
-            8,
-
-          u0:
-            u,
-
-          u1:
-            u +
-            angularShare,
-
-          a0:
-            areaCursor,
-
-          a1:
-            1,
-        });
-
-        u +=
-          angularShare;
-      }
-    );
-  }
-
-  return territories;
+  return result;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              HILL GEOMETRY                                 */
+/*                         RETRO HILL GEOMETRY                                */
 /* -------------------------------------------------------------------------- */
 
+/*
+ * Deliberately lower segment counts + flat shading.
+ *
+ * The shape is still smooth enough to read as a hill,
+ * but each polygon catches light separately like
+ * PS1 / voxel-era terrain.
+ */
 function createHillGeometry() {
   const radialSegments =
-    100;
+    44;
 
   const angularSegments =
-    200;
+    96;
 
   const positions:
     number[] = [];
 
-  const normals:
-    number[] = [];
-
   const indices:
     number[] = [];
+
+  const colors:
+    number[] = [];
+
+  const palette =
+    PIXEL_GREEN_PALETTE.map(
+      (
+        color
+      ) =>
+        new THREE.Color(
+          color
+        )
+    );
 
   for (
     let radial = 0;
@@ -1008,6 +1204,38 @@ function createHillGeometry() {
         radialSegments
       ) *
       HILL_RADIUS;
+
+    const height =
+      hillHeightAtRadius(
+        radius
+      );
+
+    const elevation =
+      clamp(
+        (
+          height -
+          HILL_BASE_Y
+        ) /
+          HILL_HEIGHT,
+        0,
+        1
+      );
+
+    const paletteIndex =
+      clamp(
+        Math.floor(
+          elevation *
+            palette.length
+        ),
+        0,
+        palette.length -
+          1
+      );
+
+    const color =
+      palette[
+        paletteIndex
+      ];
 
     for (
       let angular = 0;
@@ -1027,21 +1255,13 @@ function createHillGeometry() {
         Math.PI *
         2;
 
-      const normal =
-        hillNormal(
-          radius,
-          angle
-        );
-
       positions.push(
         radius *
           Math.sin(
             angle
           ),
 
-        hillHeightAtRadius(
-          radius
-        ),
+        height,
 
         radius *
           Math.cos(
@@ -1049,10 +1269,10 @@ function createHillGeometry() {
           )
       );
 
-      normals.push(
-        normal.x,
-        normal.y,
-        normal.z
+      colors.push(
+        color.r,
+        color.g,
+        color.b
       );
     }
   }
@@ -1082,10 +1302,8 @@ function createHillGeometry() {
 
       const c =
         a +
-        (
-          angularSegments +
-          1
-        );
+        angularSegments +
+        1;
 
       const d =
         c + 1;
@@ -1114,9 +1332,9 @@ function createHillGeometry() {
   );
 
   geometry.setAttribute(
-    "normal",
+    "color",
     new THREE.Float32BufferAttribute(
-      normals,
+      colors,
       3
     )
   );
@@ -1125,6 +1343,7 @@ function createHillGeometry() {
     indices
   );
 
+  geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 
   return geometry;
@@ -1145,28 +1364,31 @@ function createTerritoryGeometry(
     territory.a1 -
     territory.a0;
 
+  /*
+   * Intentionally moderate polygon density.
+   *
+   * Curved enough to match hill,
+   * faceted enough to retain game vibe.
+   */
   const angularSegments =
     Math.max(
-      5,
+      3,
       Math.ceil(
         uRange *
-          100
+          70
       )
     );
 
   const radialSegments =
     Math.max(
-      4,
+      3,
       Math.ceil(
         aRange *
-          90
+          55
       )
     );
 
   const positions:
-    number[] = [];
-
-  const normals:
     number[] = [];
 
   const indices:
@@ -1183,16 +1405,10 @@ function createTerritoryGeometry(
       radialSegments;
 
     const area =
-      territory.a0 +
-      (
-        territory.a1 -
-        territory.a0
-      ) *
-        radialT;
-
-    const radius =
-      areaFractionToRadius(
-        area
+      THREE.MathUtils.lerp(
+        territory.a0,
+        territory.a1,
+        radialT
       );
 
     for (
@@ -1206,20 +1422,11 @@ function createTerritoryGeometry(
         angularSegments;
 
       const u =
-        territory.u0 +
-        (
-          territory.u1 -
-          territory.u0
-        ) *
-          angularT;
-
-      const angle =
-        (
-          u -
-          0.5
-        ) *
-        Math.PI *
-        2;
+        THREE.MathUtils.lerp(
+          territory.u0,
+          territory.u1,
+          angularT
+        );
 
       const point =
         hillSurfacePosition(
@@ -1228,22 +1435,10 @@ function createTerritoryGeometry(
           PATCH_LIFT
         );
 
-      const normal =
-        hillNormal(
-          radius,
-          angle
-        );
-
       positions.push(
         point.x,
         point.y,
         point.z
-      );
-
-      normals.push(
-        normal.x,
-        normal.y,
-        normal.z
       );
     }
   }
@@ -1273,10 +1468,8 @@ function createTerritoryGeometry(
 
       const c =
         a +
-        (
-          angularSegments +
-          1
-        );
+        angularSegments +
+        1;
 
       const d =
         c + 1;
@@ -1304,232 +1497,61 @@ function createTerritoryGeometry(
     )
   );
 
-  geometry.setAttribute(
-    "normal",
-    new THREE.Float32BufferAttribute(
-      normals,
-      3
-    )
-  );
-
   geometry.setIndex(
     indices
   );
 
+  geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 
   return geometry;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                           TERRITORY BORDER                                 */
+/*                         RADIAL TERRITORY SEAM                              */
 /* -------------------------------------------------------------------------- */
 
-function createTerritoryBorder(
+/*
+ * We only draw ONE radial separator per plot.
+ *
+ * Ring contours are handled separately.
+ *
+ * This avoids duplicated glowing edges and makes
+ * the divvy-up much cleaner.
+ */
+function createSeparatorGeometry(
   territory: Territory
 ) {
   const positions:
     number[] = [];
 
-  function add(
-    a: THREE.Vector3,
-    b: THREE.Vector3
-  ) {
-    positions.push(
-      a.x,
-      a.y,
-      a.z,
-
-      b.x,
-      b.y,
-      b.z
-    );
-  }
-
-  /*
-   * Summit cap only needs outer circle.
-   */
-  if (
-    territory.rank ===
-    1
-  ) {
-    const segments =
-      150;
-
-    for (
-      let index = 0;
-      index <
-      segments;
-      index++
-    ) {
-      const u0 =
-        index /
-        segments;
-
-      const u1 =
-        (
-          index +
-          1
-        ) /
-        segments;
-
-      add(
-        hillSurfacePosition(
-          u0,
-          territory.a1,
-          BORDER_LIFT
-        ),
-
-        hillSurfacePosition(
-          u1,
-          territory.a1,
-          BORDER_LIFT
-        )
-      );
-    }
-
-    const geometry =
-      new THREE.BufferGeometry();
-
-    geometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(
-        positions,
-        3
-      )
-    );
-
-    return geometry;
-  }
-
-  const angularSegments =
+  const steps =
     Math.max(
-      6,
-      Math.ceil(
-        (
-          territory.u1 -
-          territory.u0
-        ) *
-          100
-      )
-    );
-
-  const radialSegments =
-    Math.max(
-      5,
+      4,
       Math.ceil(
         (
           territory.a1 -
           territory.a0
         ) *
-          75
+          60
       )
     );
 
-  /* inner curved edge */
-
   for (
     let index = 0;
-    index <
-    angularSegments;
+    index < steps;
     index++
   ) {
     const t0 =
       index /
-      angularSegments;
+      steps;
 
     const t1 =
       (
         index +
         1
       ) /
-      angularSegments;
-
-    add(
-      hillSurfacePosition(
-        THREE.MathUtils.lerp(
-          territory.u0,
-          territory.u1,
-          t0
-        ),
-        territory.a0,
-        BORDER_LIFT
-      ),
-
-      hillSurfacePosition(
-        THREE.MathUtils.lerp(
-          territory.u0,
-          territory.u1,
-          t1
-        ),
-        territory.a0,
-        BORDER_LIFT
-      )
-    );
-  }
-
-  /* outer curved edge */
-
-  for (
-    let index = 0;
-    index <
-    angularSegments;
-    index++
-  ) {
-    const t0 =
-      index /
-      angularSegments;
-
-    const t1 =
-      (
-        index +
-        1
-      ) /
-      angularSegments;
-
-    add(
-      hillSurfacePosition(
-        THREE.MathUtils.lerp(
-          territory.u0,
-          territory.u1,
-          t0
-        ),
-        territory.a1,
-        BORDER_LIFT
-      ),
-
-      hillSurfacePosition(
-        THREE.MathUtils.lerp(
-          territory.u0,
-          territory.u1,
-          t1
-        ),
-        territory.a1,
-        BORDER_LIFT
-      )
-    );
-  }
-
-  /*
-   * Only two clean radial separators.
-   */
-
-  for (
-    let index = 0;
-    index <
-    radialSegments;
-    index++
-  ) {
-    const t0 =
-      index /
-      radialSegments;
-
-    const t1 =
-      (
-        index +
-        1
-      ) /
-      radialSegments;
+      steps;
 
     const a0 =
       THREE.MathUtils.lerp(
@@ -1545,32 +1567,28 @@ function createTerritoryBorder(
         t1
       );
 
-    add(
+    const start =
       hillSurfacePosition(
         territory.u0,
         a0,
-        BORDER_LIFT
-      ),
+        LINE_LIFT
+      );
 
+    const end =
       hillSurfacePosition(
         territory.u0,
         a1,
-        BORDER_LIFT
-      )
-    );
+        LINE_LIFT
+      );
 
-    add(
-      hillSurfacePosition(
-        territory.u1,
-        a0,
-        BORDER_LIFT
-      ),
+    positions.push(
+      start.x,
+      start.y,
+      start.z,
 
-      hillSurfacePosition(
-        territory.u1,
-        a1,
-        BORDER_LIFT
-      )
+      end.x,
+      end.y,
+      end.z
     );
   }
 
@@ -1589,7 +1607,364 @@ function createTerritoryBorder(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                            TERRITORY SIZE                                  */
+/*                         FULL ACTIVE OUTLINE                                */
+/* -------------------------------------------------------------------------- */
+
+function createActiveBorder(
+  territory: Territory
+) {
+  const positions:
+    number[] = [];
+
+  function add(
+    start: THREE.Vector3,
+    end: THREE.Vector3
+  ) {
+    positions.push(
+      start.x,
+      start.y,
+      start.z,
+
+      end.x,
+      end.y,
+      end.z
+    );
+  }
+
+  const angularSteps =
+    Math.max(
+      8,
+      Math.ceil(
+        (
+          territory.u1 -
+          territory.u0
+        ) *
+          90
+      )
+    );
+
+  const radialSteps =
+    Math.max(
+      6,
+      Math.ceil(
+        (
+          territory.a1 -
+          territory.a0
+        ) *
+          70
+      )
+    );
+
+  for (
+    const area of [
+      territory.a0,
+      territory.a1,
+    ]
+  ) {
+    for (
+      let index = 0;
+      index <
+      angularSteps;
+      index++
+    ) {
+      const t0 =
+        index /
+        angularSteps;
+
+      const t1 =
+        (
+          index +
+          1
+        ) /
+        angularSteps;
+
+      add(
+        hillSurfacePosition(
+          THREE.MathUtils.lerp(
+            territory.u0,
+            territory.u1,
+            t0
+          ),
+          area,
+          LINE_LIFT +
+            0.012
+        ),
+
+        hillSurfacePosition(
+          THREE.MathUtils.lerp(
+            territory.u0,
+            territory.u1,
+            t1
+          ),
+          area,
+          LINE_LIFT +
+            0.012
+        )
+      );
+    }
+  }
+
+  for (
+    const u of [
+      territory.u0,
+      territory.u1,
+    ]
+  ) {
+    for (
+      let index = 0;
+      index <
+      radialSteps;
+      index++
+    ) {
+      const t0 =
+        index /
+        radialSteps;
+
+      const t1 =
+        (
+          index +
+          1
+        ) /
+        radialSteps;
+
+      add(
+        hillSurfacePosition(
+          u,
+          THREE.MathUtils.lerp(
+            territory.a0,
+            territory.a1,
+            t0
+          ),
+          LINE_LIFT +
+            0.012
+        ),
+
+        hillSurfacePosition(
+          u,
+          THREE.MathUtils.lerp(
+            territory.a0,
+            territory.a1,
+            t1
+          ),
+          LINE_LIFT +
+            0.012
+        )
+      );
+    }
+  }
+
+  const geometry =
+    new THREE.BufferGeometry();
+
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      positions,
+      3
+    )
+  );
+
+  return geometry;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                             RING CONTOURS                                  */
+/* -------------------------------------------------------------------------- */
+
+function createContourGeometry(
+  area: number
+) {
+  const positions:
+    number[] = [];
+
+  const segments =
+    128;
+
+  for (
+    let index = 0;
+    index < segments;
+    index++
+  ) {
+    const u0 =
+      index /
+      segments;
+
+    const u1 =
+      (
+        index +
+        1
+      ) /
+      segments;
+
+    const start =
+      hillSurfacePosition(
+        u0,
+        area,
+        LINE_LIFT
+      );
+
+    const end =
+      hillSurfacePosition(
+        u1,
+        area,
+        LINE_LIFT
+      );
+
+    positions.push(
+      start.x,
+      start.y,
+      start.z,
+
+      end.x,
+      end.y,
+      end.z
+    );
+  }
+
+  const geometry =
+    new THREE.BufferGeometry();
+
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      positions,
+      3
+    )
+  );
+
+  return geometry;
+}
+
+function ContourLine({
+  area,
+  strong = false,
+}: {
+  area: number;
+  strong?: boolean;
+}) {
+  const geometry =
+    useMemo(
+      () =>
+        createContourGeometry(
+          area
+        ),
+      [
+        area,
+      ]
+    );
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+    };
+  }, [
+    geometry,
+  ]);
+
+  return (
+    <lineSegments
+      geometry={
+        geometry
+      }
+      raycast={() => {}}
+      renderOrder={5}
+    >
+      <lineBasicMaterial
+        color={
+          PUMP_GREEN
+        }
+        transparent
+        opacity={
+          strong
+            ? 0.46
+            : 0.2
+        }
+        depthWrite={
+          false
+        }
+      />
+    </lineSegments>
+  );
+}
+
+function RingContours({
+  territories,
+}: {
+  territories: Territory[];
+}) {
+  const boundaries =
+    useMemo(
+      () => {
+        const byRing =
+          new Map<
+            number,
+            number
+          >();
+
+        for (
+          const territory of
+          territories
+        ) {
+          byRing.set(
+            territory.ring,
+            territory.a1
+          );
+        }
+
+        return Array.from(
+          byRing.entries()
+        )
+          .sort(
+            (
+              a,
+              b
+            ) =>
+              a[0] -
+              b[0]
+          )
+          .map(
+            (
+              [
+                ring,
+                area,
+              ]
+            ) => ({
+              ring,
+              area,
+            })
+          );
+      },
+      [
+        territories,
+      ]
+    );
+
+  return (
+    <>
+      {boundaries.map(
+        (
+          boundary
+        ) => (
+          <ContourLine
+            key={
+              boundary.ring
+            }
+            area={
+              boundary.area
+            }
+            strong={
+              boundary.ring ===
+              0
+            }
+          />
+        )
+      )}
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                         PHYSICAL TERRITORY SIZE                            */
 /* -------------------------------------------------------------------------- */
 
 function getTerritoryPhysicalSize(
@@ -1620,25 +1995,27 @@ function getTerritoryPhysicalSize(
         radius
     );
 
-  /*
-   * Approximate true radial distance over
-   * the curved hill.
-   */
-  const steps =
-    12;
+  const sampleCount =
+    14;
 
   let radialLength =
     0;
 
   let previous =
     hillSurfacePosition(
-      0.5,
+      (
+        territory.u0 +
+        territory.u1
+      ) /
+        2,
+
       territory.a0
     );
 
   for (
     let index = 1;
-    index <= steps;
+    index <=
+    sampleCount;
     index++
   ) {
     const area =
@@ -1646,22 +2023,27 @@ function getTerritoryPhysicalSize(
         territory.a0,
         territory.a1,
         index /
-          steps
+          sampleCount
       );
 
-    const point =
+    const next =
       hillSurfacePosition(
-        0.5,
+        (
+          territory.u0 +
+          territory.u1
+        ) /
+          2,
+
         area
       );
 
     radialLength +=
-      point.distanceTo(
+      next.distanceTo(
         previous
       );
 
     previous =
-      point;
+      next;
   }
 
   return {
@@ -1671,11 +2053,12 @@ function getTerritoryPhysicalSize(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              LABEL TEXTURE                                 */
+/*                              PIXEL LABEL                                   */
 /* -------------------------------------------------------------------------- */
 
 function createLabelTexture(
-  holder: Holder
+  text: string,
+  verified: boolean
 ) {
   if (
     typeof document ===
@@ -1693,7 +2076,7 @@ function createLabelTexture(
     1024;
 
   canvas.height =
-    220;
+    192;
 
   const ctx =
     canvas.getContext(
@@ -1703,6 +2086,9 @@ function createLabelTexture(
   if (!ctx) {
     return null;
   }
+
+  ctx.imageSmoothingEnabled =
+    false;
 
   ctx.clearRect(
     0,
@@ -1723,28 +2109,34 @@ function createLabelTexture(
     ).fontFamily;
 
   ctx.font =
-    `600 78px ${pageFont}`;
+    `700 82px ${pageFont}`;
 
   /*
-   * Smaller shadow because text now sits
-   * directly against the hill instead of
-   * floating above it.
+   * Hard pixel-like outline.
+   *
+   * No soft blur.
    */
-  ctx.shadowColor =
-    "rgba(0,0,0,0.95)";
+  ctx.lineWidth =
+    10;
 
-  ctx.shadowBlur =
-    9;
+  ctx.strokeStyle =
+    "#020704";
+
+  ctx.strokeText(
+    text,
+    canvas.width /
+      2,
+    canvas.height /
+      2
+  );
 
   ctx.fillStyle =
-    holder.verified
-      ? "#adffc4"
-      : "rgba(240,255,245,0.92)";
+    verified
+      ? "#b0ffc7"
+      : "#effff4";
 
   ctx.fillText(
-    abbreviateAddress(
-      holder.address
-    ),
+    text,
     canvas.width /
       2,
     canvas.height /
@@ -1759,11 +2151,14 @@ function createLabelTexture(
   texture.colorSpace =
     THREE.SRGBColorSpace;
 
+  /*
+   * Crisp / retro.
+   */
   texture.minFilter =
-    THREE.LinearFilter;
+    THREE.NearestFilter;
 
   texture.magFilter =
-    THREE.LinearFilter;
+    THREE.NearestFilter;
 
   texture.generateMipmaps =
     false;
@@ -1772,7 +2167,7 @@ function createLabelTexture(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                             FLAT HILL LABEL                                */
+/*                           FLAT TERRAIN LABEL                               */
 /* -------------------------------------------------------------------------- */
 
 function TerritoryLabel({
@@ -1784,15 +2179,103 @@ function TerritoryLabel({
   largestShare: number;
   mobile: boolean;
 }) {
+  const physical =
+    useMemo(
+      () =>
+        getTerritoryPhysicalSize(
+          territory
+        ),
+      [
+        territory,
+      ]
+    );
+
+  const relativeShare =
+    territory.share /
+    Math.max(
+      largestShare,
+      0.000001
+    );
+
+  const desiredWidth =
+    (
+      0.48 +
+      Math.sqrt(
+        relativeShare
+      ) *
+        1.1
+    ) *
+    (
+      mobile
+        ? 0.86
+        : 1
+    );
+
+  /*
+   * Allow larger labels wherever their plot
+   * physically supports them.
+   */
+  let availableWidth =
+    territory.rank ===
+    1
+      ? 1.5
+      : Math.min(
+          physical.angularWidth *
+            0.82,
+
+          physical.radialLength *
+            3.65
+        );
+
+  availableWidth =
+    Math.max(
+      0,
+      availableWidth
+    );
+
+  const width =
+    Math.min(
+      desiredWidth,
+      availableWidth,
+      mobile
+        ? 1.02
+        : 1.45
+    );
+
+  /*
+   * Tiny territory:
+   *
+   * don't force giant overflowing text.
+   * Hover still shows full wallet.
+   */
+  if (
+    width <
+    0.115
+  ) {
+    return null;
+  }
+
+  const text =
+    makeAddressLabel(
+      territory.holder
+        .address,
+      width,
+      territory.rank ===
+        1
+    );
+
   const texture =
     useMemo(
       () =>
         createLabelTexture(
-          territory.holder
+          text,
+          Boolean(
+            territory.holder
+              .verified
+          )
         ),
       [
-        territory.holder
-          .address,
+        text,
         territory.holder
           .verified,
       ]
@@ -1806,23 +2289,9 @@ function TerritoryLabel({
     texture,
   ]);
 
-  const physicalSize =
-    useMemo(
-      () =>
-        getTerritoryPhysicalSize(
-          territory
-        ),
-      [
-        territory,
-      ]
-    );
-
   /*
-   * King's label is intentionally moved
-   * toward the front half of the summit cap.
-   *
-   * A full circular cap has no meaningful
-   * angular "center".
+   * King label sits on front side of summit
+   * instead of directly on center degeneracy.
    */
   const centerU =
     territory.rank ===
@@ -1838,7 +2307,7 @@ function TerritoryLabel({
     territory.rank ===
     1
       ? territory.a1 *
-        0.42
+        0.48
       : (
           territory.a0 +
           territory.a1
@@ -1876,69 +2345,9 @@ function TerritoryLabel({
     return null;
   }
 
-  const relative =
-    territory.share /
-    Math.max(
-      largestShare,
-      0.000001
-    );
-
-  /*
-   * Desired label size.
-   */
-  let width =
-    (
-      0.36 +
-      Math.sqrt(
-        relative
-      ) *
-        0.78
-    ) *
-    (
-      mobile
-        ? 0.82
-        : 1
-    );
-
-  /*
-   * CRITICAL:
-   *
-   * Clamp the address to the actual physical
-   * dimensions of its own land plot.
-   *
-   * This prevents text spilling across
-   * boundaries / clipping over neighbors.
-   */
-  if (
-    territory.rank !==
-    1
-  ) {
-    width =
-      Math.min(
-        width,
-
-        physicalSize.angularWidth *
-          0.72,
-
-        physicalSize.radialLength *
-          3.15
-      );
-  }
-
-  width =
-    clamp(
-      width,
-      mobile
-        ? 0.12
-        : 0.14,
-      mobile
-        ? 0.72
-        : 1.02
-    );
-
   const height =
     width *
-    0.215;
+    0.19;
 
   return (
     <mesh
@@ -1949,7 +2358,7 @@ function TerritoryLabel({
         quaternion
       }
       raycast={() => {}}
-      renderOrder={7}
+      renderOrder={9}
     >
       <planeGeometry
         args={[
@@ -1964,7 +2373,7 @@ function TerritoryLabel({
         }
         transparent
         alphaTest={
-          0.025
+          0.04
         }
         depthTest
         depthWrite={
@@ -1978,7 +2387,7 @@ function TerritoryLabel({
         }
         polygonOffset
         polygonOffsetFactor={
-          -2
+          -3
         }
       />
     </mesh>
@@ -2044,9 +2453,9 @@ function HolderTooltip({
           "none",
       }}
     >
-      <div className="w-max min-w-[190px] max-w-[280px] rounded-xl border border-[#55f58a]/25 bg-black/95 p-3 text-white shadow-[0_14px_50px_rgba(0,0,0,0.65)] backdrop-blur-md">
+      <div className="w-max min-w-[190px] max-w-[280px] border-2 border-[#54f287]/40 bg-black/95 p-3 text-white shadow-[5px_5px_0_rgba(84,242,135,0.12)]">
         <div className="flex items-center justify-between gap-5">
-          <span className="text-[9px] uppercase tracking-[0.14em] text-[#55f58a]">
+          <span className="text-[9px] uppercase tracking-[0.15em] text-[#54f287]">
             {territory.rank ===
             1
               ? "king of the hill"
@@ -2055,13 +2464,13 @@ function HolderTooltip({
 
           {territory.holder
             .verified && (
-            <span className="text-[9px] uppercase tracking-[0.1em] text-[#adffc4]">
+            <span className="text-[9px] uppercase tracking-[0.1em] text-[#b0ffc7]">
               ✓ verified
             </span>
           )}
         </div>
 
-        <div className="mt-2 max-w-[245px] break-all text-[11px] leading-4 text-white/90">
+        <div className="mt-2 max-w-[245px] break-all text-[11px] leading-4 text-white">
           {
             territory.holder
               .address
@@ -2072,12 +2481,12 @@ function HolderTooltip({
           .verified &&
           territory.holder
             .message && (
-            <div className="mt-2 border-t border-white/10 pt-2">
-              <div className="text-[9px] uppercase tracking-[0.12em] text-white/30">
+            <div className="mt-2 border-t border-[#54f287]/20 pt-2">
+              <div className="text-[9px] uppercase tracking-[0.12em] text-white/35">
                 holder message
               </div>
 
-              <div className="mt-1.5 text-xs leading-4 text-[#c6ffd5]">
+              <div className="mt-1.5 text-xs leading-4 text-[#c8ffd7]">
                 “
                 {
                   territory.holder
@@ -2088,13 +2497,13 @@ function HolderTooltip({
             </div>
           )}
 
-        <div className="mt-3 grid grid-cols-2 gap-6 border-t border-white/10 pt-2">
+        <div className="mt-3 grid grid-cols-2 gap-6 border-t border-[#54f287]/20 pt-2">
           <div>
-            <div className="text-[9px] uppercase tracking-[0.12em] text-white/30">
+            <div className="text-[9px] uppercase tracking-[0.12em] text-white/35">
               holdings
             </div>
 
-            <div className="mt-0.5 text-xs text-white/70">
+            <div className="mt-0.5 text-xs text-white/80">
               {formatTokenAmount(
                 territory.holder
                   .balance
@@ -2103,11 +2512,11 @@ function HolderTooltip({
           </div>
 
           <div className="text-right">
-            <div className="text-[9px] uppercase tracking-[0.12em] text-white/30">
-              hill share
+            <div className="text-[9px] uppercase tracking-[0.12em] text-white/35">
+              land
             </div>
 
-            <div className="mt-0.5 text-xs text-[#55f58a]">
+            <div className="mt-0.5 text-xs text-[#54f287]">
               {(
                 territory.share *
                 100
@@ -2124,69 +2533,39 @@ function HolderTooltip({
 }
 
 /* -------------------------------------------------------------------------- */
-/*                            TERRITORY COLOR                                 */
+/*                           TERRITORY COLORS                                 */
 /* -------------------------------------------------------------------------- */
 
 function getTerritoryColor(
   territory: Territory,
-  count: number,
   active: boolean
 ) {
-  const rankStrength =
-    count <= 1
-      ? 1
-      : 1 -
-        (
-          territory.rank -
-          1
-        ) /
-          (
-            count -
-            1
-          );
-
-  const low =
-    new THREE.Color(
-      "#102b1a"
+  const paletteIndex =
+    clamp(
+      territory.ring,
+      0,
+      PIXEL_GREEN_PALETTE.length -
+        1
     );
 
-  const high =
+  const color =
     new THREE.Color(
-      "#3ebf6b"
+      PIXEL_GREEN_PALETTE[
+        paletteIndex
+      ]
     );
-
-  low.lerp(
-    high,
-    0.08 +
-      Math.pow(
-        rankStrength,
-        1.4
-      ) *
-        0.55
-  );
 
   /*
-   * Very subtle ring alternation.
-   *
-   * Enough to separate groups without
-   * turning the hill into a rainbow.
+   * Alternate brightness slightly between
+   * adjacent land plots.
    */
   if (
-    territory.ring %
+    territory.rank %
       2 ===
     0
   ) {
-    low.multiplyScalar(
-      0.9
-    );
-  }
-
-  if (
-    territory.rank ===
-    1
-  ) {
-    low.set(
-      "#51dc7c"
+    color.multiplyScalar(
+      0.91
     );
   }
 
@@ -2194,35 +2573,34 @@ function getTerritoryColor(
     territory.holder
       .verified
   ) {
-    low.lerp(
+    color.lerp(
       new THREE.Color(
         PUMP_GREEN_BRIGHT
       ),
-      0.12
+      0.14
     );
   }
 
   if (
     active
   ) {
-    low.lerp(
+    color.lerp(
       new THREE.Color(
         PUMP_GREEN_BRIGHT
       ),
-      0.42
+      0.48
     );
   }
 
-  return low;
+  return color;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                            TERRITORY PATCH                                 */
+/*                          TERRITORY COMPONENT                               */
 /* -------------------------------------------------------------------------- */
 
 function TerritoryPatch({
   territory,
-  count,
   largestShare,
   active,
   mobile,
@@ -2230,9 +2608,11 @@ function TerritoryPatch({
   onPin,
 }: {
   territory: Territory;
-  count: number;
+
   largestShare: number;
+
   active: boolean;
+
   mobile: boolean;
 
   onHover: (
@@ -2258,25 +2638,46 @@ function TerritoryPatch({
       ]
     );
 
-  const border =
+  const separator =
     useMemo(
       () =>
-        createTerritoryBorder(
-          territory
-        ),
+        territory.rank ===
+        1
+          ? null
+          : createSeparatorGeometry(
+              territory
+            ),
       [
         territory,
+      ]
+    );
+
+  const activeBorder =
+    useMemo(
+      () =>
+        active
+          ? createActiveBorder(
+              territory
+            )
+          : null,
+      [
+        territory,
+        active,
       ]
     );
 
   useEffect(() => {
     return () => {
       geometry.dispose();
-      border.dispose();
+
+      separator?.dispose();
+
+      activeBorder?.dispose();
     };
   }, [
     geometry,
-    border,
+    separator,
+    activeBorder,
   ]);
 
   const color =
@@ -2284,17 +2685,15 @@ function TerritoryPatch({
       () =>
         getTerritoryColor(
           territory,
-          count,
           active
         ),
       [
         territory,
-        count,
         active,
       ]
     );
 
-  function handlePointerOver(
+  function pointerOver(
     event: ThreeEvent<PointerEvent>
   ) {
     event.stopPropagation();
@@ -2308,7 +2707,7 @@ function TerritoryPatch({
       "pointer";
   }
 
-  function handlePointerOut(
+  function pointerOut(
     event: ThreeEvent<PointerEvent>
   ) {
     event.stopPropagation();
@@ -2328,10 +2727,10 @@ function TerritoryPatch({
           geometry
         }
         onPointerOver={
-          handlePointerOver
+          pointerOver
         }
         onPointerOut={
-          handlePointerOut
+          pointerOut
         }
         onClick={(
           event
@@ -2351,11 +2750,12 @@ function TerritoryPatch({
             color
           }
           roughness={
-            0.94
+            0.96
           }
           metalness={
             0
           }
+          flatShading
           emissive={
             active ||
             territory.rank ===
@@ -2365,42 +2765,60 @@ function TerritoryPatch({
           }
           emissiveIntensity={
             active
-              ? 0.12
+              ? 0.11
               : territory.rank ===
                   1
-                ? 0.07
-                : 0.004
+                ? 0.05
+                : 0
           }
         />
       </mesh>
 
-      <lineSegments
-        geometry={
-          border
-        }
-        raycast={() => {}}
-        renderOrder={5}
-      >
-        <lineBasicMaterial
-          color={
-            active
-              ? PUMP_GREEN_BRIGHT
-              : PUMP_GREEN
+      {separator && (
+        <lineSegments
+          geometry={
+            separator
           }
-          transparent
-          opacity={
-            active
-              ? 0.68
-              : territory.rank ===
-                  1
-                ? 0.34
-                : 0.14
+          raycast={() => {}}
+          renderOrder={6}
+        >
+          <lineBasicMaterial
+            color={
+              PUMP_GREEN
+            }
+            transparent
+            opacity={
+              0.23
+            }
+            depthWrite={
+              false
+            }
+          />
+        </lineSegments>
+      )}
+
+      {activeBorder && (
+        <lineSegments
+          geometry={
+            activeBorder
           }
-          depthWrite={
-            false
-          }
-        />
-      </lineSegments>
+          raycast={() => {}}
+          renderOrder={7}
+        >
+          <lineBasicMaterial
+            color={
+              PUMP_GREEN_BRIGHT
+            }
+            transparent
+            opacity={
+              0.88
+            }
+            depthWrite={
+              false
+            }
+          />
+        </lineSegments>
+      )}
 
       <TerritoryLabel
         territory={
@@ -2418,65 +2836,59 @@ function TerritoryPatch({
 }
 
 /* -------------------------------------------------------------------------- */
-/*                               KING MARKER                                  */
+/*                          PIXEL KING FLAG                                   */
 /* -------------------------------------------------------------------------- */
 
-function KingMarker({
-  king,
-}: {
-  king:
-    | Territory
-    | undefined;
-}) {
-  if (!king) {
-    return null;
-  }
-
+function KingFlag() {
   const summitY =
     hillHeightAtRadius(
       0
     );
 
   return (
-    <group>
-      {/* tiny pole */}
+    <group
+      position={[
+        0,
+        summitY,
+        0,
+      ]}
+    >
+      {/* pixel pole */}
       <mesh
         position={[
           0,
-          summitY +
-            0.29,
+          0.38,
           0,
         ]}
         raycast={() => {}}
       >
-        <cylinderGeometry
+        <boxGeometry
           args={[
-            0.012,
-            0.012,
-            0.58,
-            8,
+            0.035,
+            0.76,
+            0.035,
           ]}
         />
 
         <meshBasicMaterial
-          color="#d7ffe2"
+          color="#dffff0"
         />
       </mesh>
 
-      {/* flag */}
+      {/* pixel flag blocks */}
       <mesh
         position={[
           0.18,
-          summitY +
-            0.46,
+          0.64,
           0,
         ]}
         raycast={() => {}}
       >
-        <planeGeometry
+        <boxGeometry
           args={[
             0.36,
-            0.2,
+            0.24,
+            0.04,
           ]}
         />
 
@@ -2488,11 +2900,31 @@ function KingMarker({
             PUMP_GREEN
           }
           emissiveIntensity={
-            0.22
+            0.18
           }
-          side={
-            THREE.DoubleSide
-          }
+          flatShading
+        />
+      </mesh>
+
+      <mesh
+        position={[
+          0.315,
+          0.56,
+          0,
+        ]}
+        raycast={() => {}}
+      >
+        <boxGeometry
+          args={[
+            0.09,
+            0.08,
+            0.045,
+          ]}
+        />
+
+        <meshStandardMaterial
+          color="#31ba62"
+          flatShading
         />
       </mesh>
     </group>
@@ -2528,62 +2960,62 @@ function BaseHill() {
         raycast={() => {}}
       >
         <meshStandardMaterial
-          color="#09170e"
+          vertexColors
           roughness={1}
           metalness={0}
+          flatShading
         />
       </mesh>
 
-      {/* subtle clean outer edge */}
+      {/* pixel-game base lip */}
       <mesh
-        rotation={[
-          Math.PI /
-            2,
-          0,
-          0,
-        ]}
         position={[
           0,
-          HILL_BASE_Y +
-            0.012,
+          HILL_BASE_Y -
+            0.055,
           0,
         ]}
         raycast={() => {}}
       >
-        <torusGeometry
+        <cylinderGeometry
           args={[
             HILL_RADIUS +
-              0.012,
-            0.018,
-            8,
-            200,
+              0.03,
+            HILL_RADIUS +
+              0.12,
+            0.11,
+            96,
           ]}
         />
 
-        <meshBasicMaterial
-          color={
-            PUMP_GREEN
-          }
-          transparent
-          opacity={
-            0.42
-          }
+        <meshStandardMaterial
+          color="#06100a"
+          roughness={1}
+          flatShading
         />
       </mesh>
+
+      <ContourLine
+        area={1}
+        strong
+      />
     </>
   );
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              ROTATION                                      */
+/*                                ROTATION                                    */
 /* -------------------------------------------------------------------------- */
 
 function SlowRotate({
   children,
   paused,
 }: {
-  children: ReactNode;
-  paused: boolean;
+  children:
+    ReactNode;
+
+  paused:
+    boolean;
 }) {
   const group =
     useRef<THREE.Group>(
@@ -2604,13 +3036,15 @@ function SlowRotate({
 
       group.current.rotation.y +=
         delta *
-        0.032;
+        0.027;
     }
   );
 
   return (
     <group
-      ref={group}
+      ref={
+        group
+      }
     >
       {children}
     </group>
@@ -2618,7 +3052,7 @@ function SlowRotate({
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              HOLDER HILL                                   */
+/*                               HOLDER HILL                                  */
 /* -------------------------------------------------------------------------- */
 
 function HolderHill({
@@ -2640,16 +3074,16 @@ function HolderHill({
     );
 
   const [
-    hoveredAddress,
-    setHoveredAddress,
+    hovered,
+    setHovered,
   ] =
     useState<
       string | null
     >(null);
 
   const [
-    pinnedAddress,
-    setPinnedAddress,
+    pinned,
+    setPinned,
   ] =
     useState<
       string | null
@@ -2663,8 +3097,8 @@ function HolderHill({
   }, []);
 
   const activeAddress =
-    hoveredAddress ??
-    pinnedAddress;
+    hovered ??
+    pinned;
 
   const activeTerritory =
     useMemo(
@@ -2712,9 +3146,6 @@ function HolderHill({
               territory={
                 territory
               }
-              count={
-                territories.length
-              }
               largestShare={
                 largestShare
               }
@@ -2727,12 +3158,12 @@ function HolderHill({
                 mobile
               }
               onHover={
-                setHoveredAddress
+                setHovered
               }
               onPin={(
                 address
               ) => {
-                setPinnedAddress(
+                setPinned(
                   (
                     current
                   ) =>
@@ -2746,6 +3177,12 @@ function HolderHill({
           )
         )}
 
+        <RingContours
+          territories={
+            territories
+          }
+        />
+
         {activeTerritory && (
           <HolderTooltip
             territory={
@@ -2755,20 +3192,19 @@ function HolderHill({
         )}
       </SlowRotate>
 
-      <KingMarker
-        king={
-          territories[0]
-        }
-      />
+      {territories.length >
+        0 && (
+        <KingFlag />
+      )}
     </>
   );
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                  GROUND                                    */
+/*                              GAME LEVEL FLOOR                              */
 /* -------------------------------------------------------------------------- */
 
-function Ground() {
+function LevelFloor() {
   return (
     <>
       <mesh
@@ -2781,7 +3217,7 @@ function Ground() {
         position={[
           0,
           HILL_BASE_Y -
-            0.035,
+            0.12,
           0,
         ]}
         raycast={() => {}}
@@ -2794,21 +3230,21 @@ function Ground() {
         />
 
         <meshBasicMaterial
-          color="#010302"
+          color="#010402"
         />
       </mesh>
 
       <gridHelper
         args={[
-          28,
-          56,
-          "#11351e",
-          "#06120a",
+          30,
+          60,
+          "#174429",
+          "#07170d",
         ]}
         position={[
           0,
           HILL_BASE_Y -
-            0.02,
+            0.105,
           0,
         ]}
       />
@@ -2840,38 +3276,31 @@ function ResponsiveCamera() {
     ) {
       perspective.position.set(
         0,
-        5.9,
-        18
+        6.4,
+        19.5
       );
 
       perspective.fov =
         46;
 
-      /*
-       * Slight downward view:
-       *
-       * whole circular base is visible,
-       * but still low enough to read
-       * the hill silhouette.
-       */
       perspective.lookAt(
         0,
-        -0.65,
+        -0.8,
         0
       );
     } else {
       perspective.position.set(
         0,
-        5.6,
-        12.9
+        5.5,
+        13.8
       );
 
       perspective.fov =
-        40;
+        39;
 
       perspective.lookAt(
         0,
-        -0.45,
+        -0.55,
         0
       );
     }
@@ -2886,7 +3315,7 @@ function ResponsiveCamera() {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                  SCENE                                     */
+/*                                   SCENE                                    */
 /* -------------------------------------------------------------------------- */
 
 function SceneContent({
@@ -2910,7 +3339,7 @@ function SceneContent({
     mobile
       ? [
           0.72,
-          0.82,
+          0.88,
           0.72,
         ]
       : [
@@ -2928,12 +3357,12 @@ function SceneContent({
     mobile
       ? [
           0,
-          -0.95,
+          -1.02,
           0,
         ]
       : [
           0,
-          -0.42,
+          -0.45,
           0,
         ];
 
@@ -2946,17 +3375,17 @@ function SceneContent({
         args={[
           "#000000",
           mobile
-            ? 18
-            : 14,
+            ? 20
+            : 15,
           mobile
-            ? 34
-            : 27,
+            ? 36
+            : 29,
         ]}
       />
 
       <ambientLight
         intensity={
-          0.42
+          0.5
         }
       />
 
@@ -2967,7 +3396,7 @@ function SceneContent({
           8,
         ]}
         intensity={
-          2.15
+          2
         }
       />
 
@@ -2978,7 +3407,7 @@ function SceneContent({
           -5,
         ]}
         intensity={
-          0.22
+          0.24
         }
         color={
           PUMP_GREEN
@@ -2992,7 +3421,7 @@ function SceneContent({
           5,
         ]}
         intensity={
-          4
+          3.2
         }
         distance={
           16
@@ -3011,7 +3440,7 @@ function SceneContent({
           scale
         }
       >
-        <Ground />
+        <LevelFloor />
 
         <HolderHill
           holders={
@@ -3022,40 +3451,6 @@ function SceneContent({
           }
         />
       </group>
-
-      <Sparkles
-        count={
-          mobile
-            ? 12
-            : 22
-        }
-        scale={[
-          mobile
-            ? 9
-            : 14,
-          8,
-          8,
-        ]}
-        position={[
-          0,
-          0,
-          -3,
-        ]}
-        size={
-          mobile
-            ? 0.6
-            : 0.85
-        }
-        speed={
-          0.05
-        }
-        opacity={
-          0.1
-        }
-        color={
-          PUMP_GREEN
-        }
-      />
     </>
   );
 }
@@ -3071,17 +3466,17 @@ export default function MoonScene({
     <Canvas
       dpr={[
         1,
-        1.6,
+        1.5,
       ]}
       camera={{
         position: [
           0,
-          5.6,
-          12.9,
+          5.5,
+          13.8,
         ],
 
         fov:
-          40,
+          39,
 
         near:
           0.1,
@@ -3090,8 +3485,11 @@ export default function MoonScene({
           100,
       }}
       gl={{
+        /*
+         * Important for retro-game look.
+         */
         antialias:
-          true,
+          false,
 
         alpha:
           false,

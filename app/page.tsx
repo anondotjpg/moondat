@@ -14,27 +14,19 @@ type Holder = {
   balance: number;
 
   verified?: boolean;
-
-  message?:
-    | string
-    | null;
-
-  verifiedAt?:
-    | string
-    | null;
+  message?: string | null;
+  verifiedAt?: string | null;
 };
 
 type HoldersResponse = {
   mint: string;
 
   minimumBalance: number;
-
   maxDisplayedHolders: number;
 
   holders: Holder[];
 
   holderCount: number;
-
   displayedBalance: number;
 
   excludedLiquidityPool: {
@@ -43,14 +35,12 @@ type HoldersResponse = {
   } | null;
 
   totalWalletCount?: number;
-
   qualifyingHolderCount?: number;
-
   updatedAt?: string;
 };
 
 const TOKEN_MINT =
-  "BNWxJHox67LeC2LLTqES6ntiQeJU7v32SSY2HbHapump";
+  "XXXXXXXXXXX";
 
 const REFRESH_INTERVAL_MS =
   60_000;
@@ -59,8 +49,7 @@ function abbreviateMint(
   address: string
 ) {
   if (
-    address.length <
-    10
+    address.length < 10
   ) {
     return address;
   }
@@ -113,20 +102,30 @@ function CheckIcon() {
   );
 }
 
+function VerifyIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden="true"
+    >
+      <path d="M12 3 19 6v5c0 4.4-2.7 8.3-7 10-4.3-1.7-7-5.6-7-10V6l7-3Z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+
 export default function Home() {
   const [
     holders,
     setHolders,
   ] =
-    useState<Holder[]>(
-      []
-    );
-
-  const [
-    displayedBalance,
-    setDisplayedBalance,
-  ] =
-    useState(0);
+    useState<Holder[]>([]);
 
   const [
     loading,
@@ -138,9 +137,9 @@ export default function Home() {
     error,
     setError,
   ] =
-    useState<
-      string | null
-    >(null);
+    useState<string | null>(
+      null
+    );
 
   const [
     copied,
@@ -157,8 +156,7 @@ export default function Home() {
   const loadHolders =
     useCallback(
       async (
-        initial =
-          false
+        initial = false
       ) => {
         try {
           if (
@@ -185,8 +183,7 @@ export default function Home() {
               await response
                 .json()
                 .catch(
-                  () =>
-                    null
+                  () => null
                 );
 
             throw new Error(
@@ -208,20 +205,12 @@ export default function Home() {
             )
           );
 
-          setDisplayedBalance(
-            typeof data.displayedBalance ===
-              "number"
-              ? data.displayedBalance
-              : 0
-          );
-
           setError(
             null
           );
         } catch (err) {
           const message =
-            err instanceof
-            Error
+            err instanceof Error
               ? err.message
               : "Unable to load holders.";
 
@@ -302,6 +291,7 @@ export default function Home() {
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-black text-white">
+      {/* Hill */}
       <div className="absolute inset-0">
         <MoonScene
           holders={
@@ -316,6 +306,7 @@ export default function Home() {
           kingthehill.lol
         </span>
 
+        {/* Mint */}
         <div className="pointer-events-auto mt-1.5 flex items-center gap-1.5 sm:mt-2">
           <span className="text-[10px] text-white/35 sm:text-xs">
             {abbreviateMint(
@@ -343,6 +334,7 @@ export default function Home() {
           </button>
         </div>
 
+        {/* Verify holder */}
         <button
           type="button"
           onClick={() => {
@@ -350,9 +342,75 @@ export default function Home() {
               true
             );
           }}
-          className="pointer-events-auto mt-2 text-[10px] text-white/35 transition hover:text-white/70 sm:text-xs"
+          className="
+            pointer-events-auto
+            group
+            relative
+            mt-3
+            flex
+            h-9
+            items-center
+            gap-2
+            overflow-hidden
+            rounded-lg
+            border
+            border-[#54f287]/25
+            bg-[#102d1b]
+            px-3
+            text-[11px]
+            font-medium
+            text-[#c9ffd8]
+            shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]
+            transition
+            duration-150
+            hover:border-[#54f287]/45
+            hover:bg-[#153a23]
+            hover:text-white
+            active:scale-[0.98]
+            sm:h-10
+            sm:px-3.5
+            sm:text-xs
+          "
         >
-          verify holder
+          {/* terrain / pixel texture */}
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-40"
+            style={{
+              backgroundImage: `
+                linear-gradient(
+                  135deg,
+                  rgba(84, 242, 135, 0.12) 0px,
+                  rgba(84, 242, 135, 0.12) 2px,
+                  transparent 2px,
+                  transparent 7px
+                ),
+                linear-gradient(
+                  45deg,
+                  rgba(0, 0, 0, 0.22) 0px,
+                  rgba(0, 0, 0, 0.22) 3px,
+                  transparent 3px,
+                  transparent 9px
+                )
+              `,
+              backgroundSize:
+                "11px 11px, 15px 15px",
+            }}
+          />
+
+          {/* subtle top highlight */}
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[#8cffad]/25"
+          />
+
+          <span className="relative z-10 text-[#68f494] transition group-hover:text-[#9affb6]">
+            <VerifyIcon />
+          </span>
+
+          <span className="relative z-10 whitespace-nowrap">
+            verify holder
+          </span>
         </button>
       </div>
 
@@ -376,7 +434,7 @@ export default function Home() {
       {loading && (
         <div className="pointer-events-none absolute bottom-6 left-1/2 z-10 -translate-x-1/2 sm:bottom-8">
           <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/50 px-4 py-2 backdrop-blur-xl">
-            <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+            <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#54f287]" />
 
             <span className="whitespace-nowrap text-xs text-white/50">
               Loading holder
@@ -406,10 +464,6 @@ export default function Home() {
           );
         }}
         onVerified={async () => {
-          /*
-           * Immediately pull the new verified
-           * message instead of waiting 60 sec.
-           */
           await loadHolders(
             false
           );
