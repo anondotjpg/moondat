@@ -10,311 +10,294 @@ import {
   TOKEN_MINT,
 } from "@/lib/token-config";
 
-import {
-  findVerificationTransfer,
-  getCurrentTopHolder,
-} from "@/lib/holder-verification";
-
 export const runtime =
   "nodejs";
 
 export const dynamic =
   "force-dynamic";
 
-export async function POST(
-  request: Request
-) {
+type Holder = {
+  address: string;
+  balance: number;
+};
+
+type VerifiedMessage = {
+  wallet_address: string;
+  message: string;
+  verified_at: string;
+};
+
+export async function GET() {
   try {
-    const body =
-      await request.json();
-
-    const challengeId =
-      typeof body
-        ?.challengeId ===
-      "string"
-        ? body.challengeId.trim()
-        : "";
-
-    if (
-      !challengeId
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "Missing verification request.",
-        },
-        {
-          status: 400,
-        }
-      );
-    }
+    /* -------------------------------------------------------------------- */
+    /* HOLDER SNAPSHOT                                                       */
+    /* -------------------------------------------------------------------- */
 
     const {
-      data:
-        challenge,
-      error:
-        challengeError,
+      data: snapshot,
+      error: snapshotError,
     } =
       await supabaseAdmin
         .from(
-          "holder_verification_challenges"
+          "token_holder_snapshots"
         )
         .select(
           `
-            id,
             mint,
-            wallet_address,
-            message,
-            destination_wallet,
-            amount_lamports,
-            created_at,
-            expires_at,
-            verified_at,
-            verification_tx_signature
+            minimum_balance,
+            max_displayed_holders,
+            holders,
+            holder_count,
+            displayed_balance,
+            excluded_top_holder,
+            total_wallet_count,
+            qualifying_holder_count,
+            updated_at
           `
         )
         .eq(
-          "id",
-          challengeId
+          "mint",
+          TOKEN_MINT
         )
         .maybeSingle();
 
     if (
-      challengeError
+      snapshotError
     ) {
-      throw challengeError;
-    }
+      console.error(
+        "[holders-api] snapshot error:",
+        snapshotError
+      );
 
-    if (
-      !challenge
-    ) {
       return NextResponse.json(
         {
           error:
-            "Verification request not found.",
+            snapshotError.message ||
+            "Unable to read holder snapshot.",
         },
         {
-          status: 404,
+          status: 500,
         }
       );
     }
 
     if (
-      challenge.mint !==
-      TOKEN_MINT
+      !snapshot
     ) {
       return NextResponse.json(
         {
           error:
-            "Invalid verification request.",
+            "Holder snapshot has not been created yet.",
         },
         {
-          status: 400,
+          status: 503,
         }
       );
     }
 
-    if (
-      challenge.verified_at ||
-      challenge.verification_tx_signature
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "This verification request has already been completed.",
-        },
-        {
-          status: 409,
-        }
-      );
-    }
+    const holders =
+      Array.isArray(
+        snapshot.holders
+      )
+        ? (
+            snapshot.holders as Holder[]
+          )
+        : [];
 
-    if (
-      new Date(
-        challenge.expires_at
-      ).getTime() <=
-      Date.now()
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "Verification expired. Start a new one.",
-        },
-        {
-          status: 410,
-        }
-      );
-    }
+    /* -------------------------------------------------------------------- */
+    /* VERIFIED MESSAGES                                                     */
+    /* -------------------------------------------------------------------- */
 
     /*
-     * Re-check holder status immediately before
-     * accepting the payment.
-     */
-    const holder =
-      await getCurrentTopHolder(
-        challenge.wallet_address
-      );
-
-    if (!holder) {
-      return NextResponse.json(
-        {
-          error:
-            "That wallet is no longer a displayed top holder.",
-        },
-        {
-          status: 403,
-        }
-      );
-    }
-
-    const transfer =
-      await findVerificationTransfer(
-        {
-          sourceWallet:
-            challenge.wallet_address,
-
-          destinationWallet:
-            challenge.destination_wallet,
-
-          amountLamports:
-            Number(
-              challenge.amount_lamports
-            ),
-
-          createdAt:
-            new Date(
-              challenge.created_at
-            ),
-        }
-      );
-
-    if (!transfer) {
-      return NextResponse.json(
-        {
-          found: false,
-
-          error:
-            "No matching 0.01 SOL transfer found yet. Make sure it was sent directly from the holder wallet, then try again.",
-        },
-        {
-          status: 404,
-        }
-      );
-    }
-
-    /*
-     * Extra friendly pre-check.
+     * Verification messages are OPTIONAL enrichment.
      *
-     * The DB also has a unique constraint,
-     * so this is protected against races.
+     * If this table/query fails for any reason,
+     * DO NOT break the holder moon.
      */
-    const {
-      data:
-        alreadyUsed,
-      error:
-        usedError,
-    } =
-      await supabaseAdmin
-        .from(
-          "holder_verification_challenges"
-        )
-        .select(
-          "id"
-        )
-        .eq(
-          "verification_tx_signature",
-          transfer.signature
-        )
-        .maybeSingle();
+    const verifiedByWallet =
+      new Map<
+        string,
+        VerifiedMessage
+      >();
 
-    if (usedError) {
-      throw usedError;
-    }
+    const addresses =
+      holders
+        .map(
+          (
+            holder
+          ) =>
+            holder.address
+        )
+        .filter(
+          Boolean
+        );
 
     if (
-      alreadyUsed &&
-      alreadyUsed.id !==
-        challenge.id
+      addresses.length >
+      0
     ) {
-      return NextResponse.json(
-        {
+      try {
+        const {
+          data:
+            verifiedMessages,
           error:
-            "That transaction has already been used for verification.",
+            verifiedError,
+        } =
+          await supabaseAdmin
+            .from(
+              "verified_holder_messages"
+            )
+            .select(
+              `
+                wallet_address,
+                message,
+                verified_at
+              `
+            )
+            .eq(
+              "mint",
+              TOKEN_MINT
+            )
+            .in(
+              "wallet_address",
+              addresses
+            );
+
+        if (
+          verifiedError
+        ) {
+          console.error(
+            "[holders-api] verified message lookup failed:",
+            verifiedError
+          );
+        } else {
+          for (
+            const item of
+            verifiedMessages ??
+            []
+          ) {
+            if (
+              !item.wallet_address
+            ) {
+              continue;
+            }
+
+            verifiedByWallet.set(
+              item.wallet_address,
+              {
+                wallet_address:
+                  item.wallet_address,
+
+                message:
+                  item.message,
+
+                verified_at:
+                  item.verified_at,
+              }
+            );
+          }
+        }
+      } catch (
+        verificationError
+      ) {
+        /*
+         * Never let verification enrichment
+         * take down the core holder endpoint.
+         */
+        console.error(
+          "[holders-api] verification enrichment error:",
+          verificationError
+        );
+      }
+    }
+
+    /* -------------------------------------------------------------------- */
+    /* ENRICH HOLDERS                                                        */
+    /* -------------------------------------------------------------------- */
+
+    const enrichedHolders =
+      holders.map(
+        (
+          holder
+        ) => {
+          const verified =
+            verifiedByWallet.get(
+              holder.address
+            );
+
+          return {
+            address:
+              holder.address,
+
+            balance:
+              holder.balance,
+
+            verified:
+              Boolean(
+                verified
+              ),
+
+            message:
+              verified?.message ??
+              null,
+
+            verifiedAt:
+              verified?.verified_at ??
+              null,
+          };
+        }
+      );
+
+    /* -------------------------------------------------------------------- */
+    /* RESPONSE                                                              */
+    /* -------------------------------------------------------------------- */
+
+    return NextResponse.json(
+      {
+        mint:
+          snapshot.mint,
+
+        minimumBalance:
+          snapshot.minimum_balance,
+
+        maxDisplayedHolders:
+          snapshot.max_displayed_holders,
+
+        holders:
+          enrichedHolders,
+
+        holderCount:
+          enrichedHolders.length,
+
+        displayedBalance:
+          snapshot.displayed_balance,
+
+        excludedLiquidityPool:
+          snapshot.excluded_top_holder,
+
+        totalWalletCount:
+          snapshot.total_wallet_count,
+
+        qualifyingHolderCount:
+          snapshot.qualifying_holder_count,
+
+        updatedAt:
+          snapshot.updated_at,
+      },
+      {
+        status: 200,
+
+        headers: {
+          "Cache-Control":
+            "no-store, no-cache, must-revalidate",
         },
-        {
-          status: 409,
-        }
-      );
-    }
-
-    /*
-     * Atomically:
-     *
-     * 1. consume transaction
-     * 2. mark challenge verified
-     * 3. publish message
-     */
-    const {
-      data:
-        finalized,
-      error:
-        finalizeError,
-    } =
-      await supabaseAdmin.rpc(
-        "finalize_holder_verification",
-        {
-          p_challenge_id:
-            challenge.id,
-
-          p_tx_signature:
-            transfer.signature,
-        }
-      );
-
-    if (
-      finalizeError
-    ) {
-      throw finalizeError;
-    }
-
-    if (
-      finalized !==
-      true
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "This payment was already used or the verification expired.",
-        },
-        {
-          status: 409,
-        }
-      );
-    }
-
-    return NextResponse.json({
-      ok: true,
-
-      verified: true,
-
-      walletAddress:
-        challenge.wallet_address,
-
-      message:
-        challenge.message,
-
-      holderBalance:
-        holder.balance,
-
-      transactionSignature:
-        transfer.signature,
-
-      verifiedAt:
-        new Date().toISOString(),
-    });
-  } catch (error) {
+      }
+    );
+  } catch (
+    error
+  ) {
     console.error(
-      "[holder-verification-complete]",
+      "[holders-api] fatal:",
       error
     );
 
@@ -324,7 +307,7 @@ export async function POST(
           error instanceof
           Error
             ? error.message
-            : "Unable to verify payment.",
+            : "Unable to load holders.",
       },
       {
         status: 500,
