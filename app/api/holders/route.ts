@@ -3,24 +3,12 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MIN_HOLDINGS = 1_000_000;
+const MIN_HOLDINGS = 100_000;
+const MAX_DISPLAYED_HOLDERS = 100;
 const PAGE_LIMIT = 1000;
 
-/*
- * Helius Free currently allows 2 DAS requests/sec.
- *
- * 700ms between getTokenAccounts requests gives us some
- * breathing room below that ceiling instead of sitting
- * exactly at 500ms.
- */
 const DAS_REQUEST_INTERVAL_MS = 700;
-
 const MAX_RETRIES = 5;
-
-/*
- * Don't rescan every token account every time the browser
- * refreshes.
- */
 const CACHE_TTL_MS = 60_000;
 
 type HeliusTokenAccount = {
@@ -68,8 +56,15 @@ type Holder = {
 type HolderResponse = {
   mint: string;
   minimumBalance: number;
+  maxDisplayedHolders: number;
   holders: Holder[];
   holderCount: number;
+  displayedBalance: number;
+
+  excludedLiquidityPool: {
+    address: string;
+    balance: number;
+  } | null;
 };
 
 type CacheEntry = {
@@ -77,10 +72,6 @@ type CacheEntry = {
   data: HolderResponse;
 };
 
-/*
- * Store these on globalThis so Next.js dev hot reloads don't
- * immediately destroy the cache.
- */
 const globalStore = globalThis as typeof globalThis & {
   __holderMoonCache?: Map<string, CacheEntry>;
   __holderMoonInFlight?: Map<string, Promise<HolderResponse>>;
@@ -109,9 +100,6 @@ function isValidMint(value: string) {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 }
 
-/*
- * Prevent getTokenAccounts pagination from firing too quickly.
- */
 async function waitForDasSlot() {
   const now = Date.now();
 
@@ -131,40 +119,25 @@ function getRetryDelay(
   response: Response,
   attempt: number
 ) {
-  /*
-   * Helius can explicitly tell us how long to wait.
-   */
   const retryAfter = response.headers.get("retry-after");
 
   if (retryAfter) {
     const seconds = Number(retryAfter);
 
-    if (Number.isFinite(seconds) && seconds > 0) {
+    if (
+      Number.isFinite(seconds) &&
+      seconds > 0
+    ) {
       return seconds * 1000;
     }
   }
 
-  /*
-   * Otherwise:
-   *
-   * 1s
-   * 2s
-   * 4s
-   * 8s
-   * 16s
-   */
   const exponential = Math.min(
     1000 * 2 ** attempt,
     30_000
   );
 
-  /*
-   * Small jitter prevents requests from lining back up
-   * perfectly after a rate limit.
-   */
-  const jitter = Math.random() * 300;
-
-  return exponential + jitter;
+  return exponential + Math.random() * 300;
 }
 
 async function heliusRpc<T>(
@@ -176,7 +149,11 @@ async function heliusRpc<T>(
 ): Promise<T> {
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (
+    let attempt = 0;
+    attempt <= MAX_RETRIES;
+    attempt++
+  ) {
     if (options?.das) {
       await waitForDasSlot();
     }
@@ -191,9 +168,6 @@ async function heliusRpc<T>(
         cache: "no-store",
       });
 
-      /*
-       * Rate limited.
-       */
       if (response.status === 429) {
         const delay = getRetryDelay(
           response,
@@ -201,7 +175,7 @@ async function heliusRpc<T>(
         );
 
         console.warn(
-          `[holders] Helius 429. Retry ${
+          `[holders] Helius 429 — retry ${
             attempt + 1
           }/${MAX_RETRIES} in ${Math.round(delay)}ms`
         );
@@ -217,10 +191,6 @@ async function heliusRpc<T>(
         continue;
       }
 
-      /*
-       * Helius occasionally returns temporary server errors.
-       * Retry those as well.
-       */
       if (
         response.status === 502 ||
         response.status === 503 ||
@@ -229,12 +199,6 @@ async function heliusRpc<T>(
         const delay = getRetryDelay(
           response,
           attempt
-        );
-
-        console.warn(
-          `[holders] Helius ${response.status}. Retry ${
-            attempt + 1
-          }/${MAX_RETRIES} in ${Math.round(delay)}ms`
         );
 
         if (attempt >= MAX_RETRIES) {
@@ -249,9 +213,7 @@ async function heliusRpc<T>(
       }
 
       if (!response.ok) {
-        const text = await response
-          .text()
-          .catch(() => "");
+        const text = await response.text().catch(() => "");
 
         throw new Error(
           `Helius request failed with ${response.status}${
@@ -267,11 +229,6 @@ async function heliusRpc<T>(
           ? error
           : new Error("Unknown Helius error");
 
-      /*
-       * Don't retry normal API / validation errors.
-       * 429 and transient server errors were already
-       * handled above.
-       */
       throw lastError;
     }
   }
@@ -289,13 +246,6 @@ async function scanHolders(
   const rpcUrl =
     `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
 
-  /*
-   * First determine the mint decimals.
-   *
-   * Pump.fun tokens are normally 6 decimals, but reading
-   * this dynamically keeps the route correct for arbitrary
-   * Solana tokens too.
-   */
   const supply =
     await heliusRpc<TokenSupplyResponse>(
       rpcUrl,
@@ -329,12 +279,11 @@ async function scanHolders(
   const divisor = 10 ** decimals;
 
   /*
-   * A wallet can have more than one SPL token account for
-   * the same mint.
-   *
-   * Aggregate them by actual wallet/owner.
+   * Combine multiple token accounts belonging to
+   * the same actual wallet.
    */
-  const balances = new Map<string, number>();
+  const balances =
+    new Map<string, number>();
 
   let page = 1;
   let rawTokenAccounts = 0;
@@ -359,10 +308,6 @@ async function scanHolders(
           },
         },
         {
-          /*
-           * getTokenAccounts is the call we're deliberately
-           * throttling.
-           */
           das: true,
         }
       );
@@ -388,7 +333,8 @@ async function scanHolders(
         continue;
       }
 
-      const rawAmount = Number(account.amount);
+      const rawAmount =
+        Number(account.amount);
 
       if (
         !Number.isFinite(rawAmount) ||
@@ -400,27 +346,22 @@ async function scanHolders(
       const tokenAmount =
         rawAmount / divisor;
 
-      const previous =
-        balances.get(account.owner) ?? 0;
-
       balances.set(
         account.owner,
-        previous + tokenAmount
+        (balances.get(account.owner) ?? 0) +
+          tokenAmount
       );
     }
 
-    /*
-     * Less than our limit means this was the final page.
-     */
-    if (accounts.length < PAGE_LIMIT) {
+    if (
+      accounts.length <
+      PAGE_LIMIT
+    ) {
       break;
     }
 
     page += 1;
 
-    /*
-     * Sanity guard.
-     */
     if (page > 10_000) {
       throw new Error(
         "Holder pagination exceeded safety limit."
@@ -428,37 +369,91 @@ async function scanHolders(
     }
   }
 
-  const holders = Array.from(
-    balances.entries()
-  )
-    .map(([address, balance]) => ({
-      address,
-      balance,
-    }))
-    /*
-     * Your requirement:
-     *
-     * ONLY holders ABOVE 100,000 tokens.
-     */
-    .filter(
-      (holder) =>
-        holder.balance > MIN_HOLDINGS
+  /*
+   * 1. Only wallets above 100k.
+   * 2. Largest first.
+   */
+  const qualifyingHolders =
+    Array.from(
+      balances.entries()
     )
-    .sort(
-      (a, b) => b.balance - a.balance
+      .map(
+        ([address, balance]) => ({
+          address,
+          balance,
+        })
+      )
+      .filter(
+        (holder) =>
+          holder.balance >
+          MIN_HOLDINGS
+      )
+      .sort(
+        (a, b) =>
+          b.balance -
+          a.balance
+      );
+
+  /*
+   * Largest holder is treated as LP and removed.
+   */
+  const excludedLiquidityPool =
+    qualifyingHolders[0] ??
+    null;
+
+  /*
+   * Remove LP FIRST.
+   *
+   * Then take only the 100 largest real wallets.
+   */
+  const holders =
+    qualifyingHolders
+      .slice(1)
+      .slice(
+        0,
+        MAX_DISPLAYED_HOLDERS
+      );
+
+  const displayedBalance =
+    holders.reduce(
+      (sum, holder) =>
+        sum +
+        holder.balance,
+      0
     );
 
   console.log(
-    `[holders] Scan finished: ${rawTokenAccounts} token accounts, ` +
-      `${balances.size} wallets, ` +
-      `${holders.length} wallets above ${MIN_HOLDINGS.toLocaleString()}`
+    `[holders] ${rawTokenAccounts} token accounts → ` +
+      `${balances.size} wallets → ` +
+      `${qualifyingHolders.length} above 100k → ` +
+      `${holders.length} displayed`
   );
+
+  if (
+    excludedLiquidityPool
+  ) {
+    console.log(
+      `[holders] Excluded LP: ${excludedLiquidityPool.address} — ` +
+        `${excludedLiquidityPool.balance.toLocaleString()} tokens`
+    );
+  }
 
   return {
     mint,
-    minimumBalance: MIN_HOLDINGS,
+    minimumBalance:
+      MIN_HOLDINGS,
+
+    maxDisplayedHolders:
+      MAX_DISPLAYED_HOLDERS,
+
     holders,
-    holderCount: holders.length,
+
+    holderCount:
+      holders.length,
+
+    displayedBalance,
+
+    excludedLiquidityPool,
   };
 }
 
@@ -466,45 +461,35 @@ async function getHolderData(
   mint: string,
   apiKey: string
 ) {
-  /*
-   * Return recent result immediately.
-   */
-  const cached = holderCache.get(mint);
+  const cached =
+    holderCache.get(mint);
 
   if (
     cached &&
-    cached.expiresAt > Date.now()
+    cached.expiresAt >
+      Date.now()
   ) {
     console.log(
-      `[holders] Using cached holder data for ${mint}`
+      `[holders] Using cached data for ${mint}`
     );
 
     return cached.data;
   }
 
-  /*
-   * Important in Next dev mode:
-   *
-   * If two requests for the same mint arrive together,
-   * don't launch two complete Helius pagination scans.
-   *
-   * Both requests share this one promise.
-   */
   const existingRequest =
-    inFlightRequests.get(mint);
-
-  if (existingRequest) {
-    console.log(
-      `[holders] Joining existing scan for ${mint}`
+    inFlightRequests.get(
+      mint
     );
 
+  if (existingRequest) {
     return existingRequest;
   }
 
-  const request = scanHolders(
-    mint,
-    apiKey
-  );
+  const request =
+    scanHolders(
+      mint,
+      apiKey
+    );
 
   inFlightRequests.set(
     mint,
@@ -512,17 +497,24 @@ async function getHolderData(
   );
 
   try {
-    const data = await request;
+    const data =
+      await request;
 
-    holderCache.set(mint, {
-      data,
-      expiresAt:
-        Date.now() + CACHE_TTL_MS,
-    });
+    holderCache.set(
+      mint,
+      {
+        data,
+        expiresAt:
+          Date.now() +
+          CACHE_TTL_MS,
+      }
+    );
 
     return data;
   } finally {
-    inFlightRequests.delete(mint);
+    inFlightRequests.delete(
+      mint
+    );
   }
 }
 
@@ -535,7 +527,10 @@ export async function GET(
         .get("mint")
         ?.trim() ?? "";
 
-    if (!mint || !isValidMint(mint)) {
+    if (
+      !mint ||
+      !isValidMint(mint)
+    ) {
       return NextResponse.json(
         {
           error:
@@ -562,18 +557,17 @@ export async function GET(
       );
     }
 
-    const data = await getHolderData(
-      mint,
-      apiKey
-    );
+    const data =
+      await getHolderData(
+        mint,
+        apiKey
+      );
 
     const response =
-      NextResponse.json(data);
+      NextResponse.json(
+        data
+      );
 
-    /*
-     * Browser/CDN caching in addition to our server-side
-     * cache above.
-     */
     response.headers.set(
       "Cache-Control",
       "public, s-maxage=60, stale-while-revalidate=120"
