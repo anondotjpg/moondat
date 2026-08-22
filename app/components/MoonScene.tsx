@@ -26,15 +26,6 @@ type MoonSceneProps = {
 
 type Territory = {
   holder: Holder;
-
-  /*
-   * Exact percentage of all displayed
-   * top-100 holder tokens.
-   *
-   * Example:
-   *
-   * 0.12 = 12%
-   */
   share: number;
 
   u0: number;
@@ -58,39 +49,309 @@ function clamp(
 ) {
   return Math.min(
     max,
-    Math.max(
-      min,
-      value
-    )
+    Math.max(min, value)
   );
 }
 
-function seededRandom(
-  seed: number
-) {
+function seededRandom(seed: number) {
   const x =
-    Math.sin(
-      seed * 9999.91
-    ) * 43758.5453;
+    Math.sin(seed * 9999.91) *
+    43758.5453;
 
-  return (
-    x -
-    Math.floor(x)
-  );
+  return x - Math.floor(x);
 }
 
 function abbreviateAddress(
   address: string
 ) {
-  return `${address.slice(
-    0,
-    4
-  )}…${address.slice(-4)}`;
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                MOON TEXTURE                                */
+/*                            8-BIT MOON TEXTURE                              */
 /* -------------------------------------------------------------------------- */
+
+const MOON_PALETTE = {
+  darkest: "#4d4d4d",
+  dark: "#636363",
+  midDark: "#777777",
+  mid: "#929292",
+  light: "#ababab",
+  brightest: "#c4c4c4",
+};
+
+/*
+ * Draws a hard-edged pixel crater.
+ *
+ * There are NO gradients here.
+ * Every crater is made from individual canvas pixels.
+ */
+function drawPixelCrater(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  centerY: number,
+  radius: number,
+  seed: number,
+  canvasWidth: number
+) {
+  const minX = Math.floor(
+    centerX - radius - 1
+  );
+
+  const maxX = Math.ceil(
+    centerX + radius + 1
+  );
+
+  const minY = Math.floor(
+    centerY - radius - 1
+  );
+
+  const maxY = Math.ceil(
+    centerY + radius + 1
+  );
+
+  for (
+    let y = minY;
+    y <= maxY;
+    y++
+  ) {
+    for (
+      let x = minX;
+      x <= maxX;
+      x++
+    ) {
+      /*
+       * Wrap horizontally so craters crossing
+       * the UV seam don't get chopped.
+       */
+      const wrappedX =
+        ((x % canvasWidth) +
+          canvasWidth) %
+        canvasWidth;
+
+      const dx =
+        x - centerX;
+
+      const dy =
+        y - centerY;
+
+      /*
+       * Slightly irregular crater shape.
+       */
+      const angle =
+        Math.atan2(dy, dx);
+
+      const irregularity =
+        1 +
+        Math.sin(
+          angle * 5 +
+            seed
+        ) *
+          0.05 +
+        Math.sin(
+          angle * 9 +
+            seed * 0.7
+        ) *
+          0.025;
+
+      const distance =
+        Math.sqrt(
+          dx * dx +
+            dy * dy
+        ) /
+        (radius *
+          irregularity);
+
+      if (distance > 1) {
+        continue;
+      }
+
+      /*
+       * Dark crater floor.
+       */
+      if (distance < 0.52) {
+        const noise =
+          seededRandom(
+            seed * 1000 +
+              x * 19 +
+              y * 31
+          );
+
+        ctx.fillStyle =
+          noise > 0.78
+            ? MOON_PALETTE.dark
+            : MOON_PALETTE.darkest;
+
+        ctx.fillRect(
+          wrappedX,
+          y,
+          1,
+          1
+        );
+
+        continue;
+      }
+
+      /*
+       * Inner wall.
+       */
+      if (distance < 0.7) {
+        ctx.fillStyle =
+          MOON_PALETTE.dark;
+
+        ctx.fillRect(
+          wrappedX,
+          y,
+          1,
+          1
+        );
+
+        continue;
+      }
+
+      /*
+       * Pixel rim.
+       *
+       * Upper-left gets highlighted.
+       * Bottom-right gets shadowed.
+       */
+      const lightDirection =
+        -dx - dy;
+
+      if (distance < 0.9) {
+        ctx.fillStyle =
+          lightDirection > 0
+            ? MOON_PALETTE.brightest
+            : MOON_PALETTE.midDark;
+
+        ctx.fillRect(
+          wrappedX,
+          y,
+          1,
+          1
+        );
+
+        continue;
+      }
+
+      if (distance <= 1) {
+        ctx.fillStyle =
+          lightDirection > 0
+            ? MOON_PALETTE.light
+            : MOON_PALETTE.dark;
+
+        ctx.fillRect(
+          wrappedX,
+          y,
+          1,
+          1
+        );
+      }
+    }
+  }
+}
+
+/*
+ * Large dark 8-bit lunar regions.
+ */
+function drawPixelMaria(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  centerY: number,
+  radiusX: number,
+  radiusY: number,
+  seed: number,
+  canvasWidth: number
+) {
+  const minX = Math.floor(
+    centerX - radiusX
+  );
+
+  const maxX = Math.ceil(
+    centerX + radiusX
+  );
+
+  const minY = Math.floor(
+    centerY - radiusY
+  );
+
+  const maxY = Math.ceil(
+    centerY + radiusY
+  );
+
+  for (
+    let y = minY;
+    y <= maxY;
+    y++
+  ) {
+    for (
+      let x = minX;
+      x <= maxX;
+      x++
+    ) {
+      const dx =
+        (x - centerX) /
+        radiusX;
+
+      const dy =
+        (y - centerY) /
+        radiusY;
+
+      const distortion =
+        Math.sin(
+          x * 0.31 +
+            seed
+        ) *
+          0.07 +
+        Math.cos(
+          y * 0.37 +
+            seed
+        ) *
+          0.07;
+
+      const distance =
+        dx * dx +
+        dy * dy +
+        distortion;
+
+      if (distance > 1) {
+        continue;
+      }
+
+      const wrappedX =
+        ((x % canvasWidth) +
+          canvasWidth) %
+        canvasWidth;
+
+      const noise =
+        seededRandom(
+          seed * 700 +
+            x * 11 +
+            y * 23
+        );
+
+      /*
+       * Don't overwrite every pixel.
+       * This lets the lunar base texture show through.
+       */
+      if (noise < 0.3) {
+        continue;
+      }
+
+      ctx.fillStyle =
+        noise > 0.82
+          ? MOON_PALETTE.midDark
+          : MOON_PALETTE.dark;
+
+      ctx.fillRect(
+        wrappedX,
+        y,
+        1,
+        1
+      );
+    }
+  }
+}
 
 function createMoonTexture(
   mobile: boolean
@@ -102,290 +363,299 @@ function createMoonTexture(
     return null;
   }
 
-  const size =
-    mobile
-      ? 1024
-      : 2048;
+  /*
+   * Intentionally tiny.
+   *
+   * The texture is enlarged across the sphere using
+   * nearest-neighbor filtering, creating the 8-bit look.
+   */
+  const width =
+    mobile ? 192 : 256;
+
+  const height =
+    mobile ? 96 : 128;
 
   const canvas =
     document.createElement(
       "canvas"
     );
 
-  canvas.width =
-    size;
-
-  canvas.height =
-    size;
+  canvas.width = width;
+  canvas.height = height;
 
   const ctx =
-    canvas.getContext(
-      "2d"
-    );
+    canvas.getContext("2d");
 
   if (!ctx) {
     return null;
   }
 
-  /*
-   * Neutral lunar base.
-   */
+  ctx.imageSmoothingEnabled =
+    false;
+
+  /* ---------------------------------------------------------------------- */
+  /* Base                                                                   */
+  /* ---------------------------------------------------------------------- */
+
   ctx.fillStyle =
-    "#999999";
+    MOON_PALETTE.mid;
 
   ctx.fillRect(
     0,
     0,
-    size,
-    size
+    width,
+    height
   );
 
-  /*
-   * Fine natural lunar grain.
-   */
-  const noiseSize =
-    mobile
-      ? 256
-      : 512;
+  /* ---------------------------------------------------------------------- */
+  /* Chunky surface grain                                                   */
+  /* ---------------------------------------------------------------------- */
 
-  const noiseCanvas =
-    document.createElement(
-      "canvas"
-    );
+  const grainPalette = [
+    MOON_PALETTE.midDark,
+    MOON_PALETTE.mid,
+    MOON_PALETTE.mid,
+    MOON_PALETTE.mid,
+    MOON_PALETTE.light,
+  ];
 
-  noiseCanvas.width =
-    noiseSize;
-
-  noiseCanvas.height =
-    noiseSize;
-
-  const noiseCtx =
-    noiseCanvas.getContext(
-      "2d"
-    );
-
-  if (noiseCtx) {
-    const image =
-      noiseCtx.createImageData(
-        noiseSize,
-        noiseSize
-      );
-
+  for (
+    let y = 0;
+    y < height;
+    y += 2
+  ) {
     for (
-      let i = 0;
-      i <
-      image.data.length;
-      i += 4
+      let x = 0;
+      x < width;
+      x += 2
     ) {
-      const value =
-        105 +
-        Math.random() *
-          65;
-
-      image.data[i] =
-        value;
-
-      image.data[
-        i + 1
-      ] = value;
-
-      image.data[
-        i + 2
-      ] = value;
-
-      image.data[
-        i + 3
-      ] = 255;
-    }
-
-    noiseCtx.putImageData(
-      image,
-      0,
-      0
-    );
-
-    ctx.globalAlpha =
-      0.34;
-
-    ctx.drawImage(
-      noiseCanvas,
-      0,
-      0,
-      size,
-      size
-    );
-
-    ctx.globalAlpha =
-      1;
-  }
-
-  /*
-   * Lunar maria.
-   */
-  for (
-    let i = 0;
-    i < 24;
-    i++
-  ) {
-    const x =
-      seededRandom(
-        i * 4 + 1
-      ) * size;
-
-    const y =
-      seededRandom(
-        i * 4 + 2
-      ) * size;
-
-    const radius =
-      size *
-      (
-        0.035 +
+      const noise =
         seededRandom(
-          i * 4 + 3
-        ) *
-          0.12
-      );
+          x * 97 +
+            y * 131 +
+            14
+        );
 
-    const gradient =
-      ctx.createRadialGradient(
+      const index =
+        Math.floor(
+          noise *
+            grainPalette.length
+        );
+
+      ctx.fillStyle =
+        grainPalette[
+          Math.min(
+            grainPalette.length -
+              1,
+            index
+          )
+        ];
+
+      /*
+       * Mostly 2x2 pixel blocks.
+       */
+      ctx.fillRect(
         x,
         y,
-        0,
-        x,
-        y,
-        radius
+        2,
+        2
       );
-
-    gradient.addColorStop(
-      0,
-      "rgba(35,35,35,0.16)"
-    );
-
-    gradient.addColorStop(
-      0.65,
-      "rgba(55,55,55,0.07)"
-    );
-
-    gradient.addColorStop(
-      1,
-      "rgba(70,70,70,0)"
-    );
-
-    ctx.fillStyle =
-      gradient;
-
-    ctx.beginPath();
-
-    ctx.arc(
-      x,
-      y,
-      radius,
-      0,
-      Math.PI * 2
-    );
-
-    ctx.fill();
+    }
   }
 
-  /*
-   * Craters.
-   */
-  const craterCount =
-    mobile
-      ? 220
-      : 400;
+  /* ---------------------------------------------------------------------- */
+  /* Large pixel maria                                                      */
+  /* ---------------------------------------------------------------------- */
+
+  const mariaCount = 14;
 
   for (
     let i = 0;
-    i <
-    craterCount;
+    i < mariaCount;
+    i++
+  ) {
+    const centerX =
+      Math.floor(
+        seededRandom(
+          i * 13 + 2
+        ) * width
+      );
+
+    const centerY =
+      Math.floor(
+        seededRandom(
+          i * 17 + 5
+        ) * height
+      );
+
+    const radiusX =
+      8 +
+      Math.floor(
+        seededRandom(
+          i * 23 + 7
+        ) * 22
+      );
+
+    const radiusY =
+      5 +
+      Math.floor(
+        seededRandom(
+          i * 29 + 11
+        ) * 13
+      );
+
+    drawPixelMaria(
+      ctx,
+      centerX,
+      centerY,
+      radiusX,
+      radiusY,
+      i + 10,
+      width
+    );
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Large recognizable craters                                             */
+  /* ---------------------------------------------------------------------- */
+
+  const largeCraterCount =
+    mobile ? 10 : 15;
+
+  for (
+    let i = 0;
+    i < largeCraterCount;
     i++
   ) {
     const x =
-      seededRandom(
-        i * 11 + 5
-      ) * size;
+      Math.floor(
+        seededRandom(
+          i * 41 + 8
+        ) * width
+      );
 
+    /*
+     * Keep centers away from exact poles.
+     */
     const y =
-      seededRandom(
-        i * 11 + 7
-      ) * size;
-
-    const importance =
-      seededRandom(
-        i * 17 + 2
+      Math.floor(
+        height * 0.12 +
+          seededRandom(
+            i * 43 + 10
+          ) *
+            height *
+            0.76
       );
 
     const radius =
-      importance > 0.95
-        ? size *
-          (
-            0.015 +
-            seededRandom(
-              i + 20
-            ) *
-              0.035
-          )
-        : size *
-          (
-            0.0015 +
-            seededRandom(
-              i + 21
-            ) *
-              0.011
-          );
-
-    const gradient =
-      ctx.createRadialGradient(
-        x -
-          radius *
-            0.18,
-        y -
-          radius *
-            0.18,
-        radius *
-          0.05,
-        x,
-        y,
-        radius
+      4 +
+      Math.floor(
+        seededRandom(
+          i * 47 + 13
+        ) * 7
       );
 
-    gradient.addColorStop(
-      0,
-      "rgba(45,45,45,0.55)"
-    );
-
-    gradient.addColorStop(
-      0.58,
-      "rgba(80,80,80,0.30)"
-    );
-
-    gradient.addColorStop(
-      0.78,
-      "rgba(190,190,190,0.24)"
-    );
-
-    gradient.addColorStop(
-      1,
-      "rgba(120,120,120,0)"
-    );
-
-    ctx.fillStyle =
-      gradient;
-
-    ctx.beginPath();
-
-    ctx.arc(
+    drawPixelCrater(
+      ctx,
       x,
       y,
       radius,
-      0,
-      Math.PI * 2
+      i + 300,
+      width
     );
-
-    ctx.fill();
   }
+
+  /* ---------------------------------------------------------------------- */
+  /* Medium craters                                                         */
+  /* ---------------------------------------------------------------------- */
+
+  const mediumCraterCount =
+    mobile ? 28 : 42;
+
+  for (
+    let i = 0;
+    i < mediumCraterCount;
+    i++
+  ) {
+    const x =
+      Math.floor(
+        seededRandom(
+          i * 53 + 17
+        ) * width
+      );
+
+    const y =
+      Math.floor(
+        seededRandom(
+          i * 59 + 19
+        ) * height
+      );
+
+    const radius =
+      2 +
+      Math.floor(
+        seededRandom(
+          i * 61 + 23
+        ) * 3
+      );
+
+    drawPixelCrater(
+      ctx,
+      x,
+      y,
+      radius,
+      i + 700,
+      width
+    );
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Tiny one/two pixel craters                                             */
+  /* ---------------------------------------------------------------------- */
+
+  const tinyCraterCount =
+    mobile ? 70 : 110;
+
+  for (
+    let i = 0;
+    i < tinyCraterCount;
+    i++
+  ) {
+    const x =
+      Math.floor(
+        seededRandom(
+          i * 67 + 31
+        ) * width
+      );
+
+    const y =
+      Math.floor(
+        seededRandom(
+          i * 71 + 37
+        ) * height
+      );
+
+    const radius =
+      seededRandom(
+        i * 73 + 41
+      ) >
+      0.75
+        ? 2
+        : 1;
+
+    drawPixelCrater(
+      ctx,
+      x,
+      y,
+      radius,
+      i + 1100,
+      width
+    );
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Texture                                                                */
+  /* ---------------------------------------------------------------------- */
 
   const texture =
     new THREE.CanvasTexture(
@@ -401,10 +671,23 @@ function createMoonTexture(
   texture.wrapT =
     THREE.ClampToEdgeWrapping;
 
-  texture.anisotropy =
-    mobile
-      ? 4
-      : 8;
+  /*
+   * CRITICAL:
+   *
+   * This keeps pixels sharp instead of Three.js
+   * smoothing the texture.
+   */
+  texture.magFilter =
+    THREE.NearestFilter;
+
+  texture.minFilter =
+    THREE.NearestFilter;
+
+  texture.generateMipmaps =
+    false;
+
+  texture.needsUpdate =
+    true;
 
   return texture;
 }
@@ -416,28 +699,17 @@ function createMoonTexture(
 function buildTreemap(
   holders: Holder[]
 ): Territory[] {
-  /*
-   * Defensive limit here too.
-   *
-   * Even if the API somehow sends more,
-   * the moon will never render >100.
-   */
-  const sorted =
-    [...holders]
-      .filter(
-        (holder) =>
-          holder.balance >
-          0
-      )
-      .sort(
-        (a, b) =>
-          b.balance -
-          a.balance
-      )
-      .slice(
-        0,
-        100
-      );
+  const sorted = [...holders]
+    .filter(
+      (holder) =>
+        holder.balance > 0
+    )
+    .sort(
+      (a, b) =>
+        b.balance -
+        a.balance
+    )
+    .slice(0, 100);
 
   const total =
     sorted.reduce(
@@ -451,15 +723,14 @@ function buildTreemap(
     );
 
   if (
-    sorted.length ===
-      0 ||
+    sorted.length === 0 ||
     total <= 0
   ) {
     return [];
   }
 
-  const result:
-    Territory[] = [];
+  const result: Territory[] =
+    [];
 
   function recurse(
     items: Holder[],
@@ -469,8 +740,7 @@ function buildTreemap(
     s1: number
   ) {
     if (
-      items.length ===
-      0
+      items.length === 0
     ) {
       return;
     }
@@ -486,25 +756,15 @@ function buildTreemap(
         0
       );
 
-    /*
-     * Once only one wallet remains,
-     * this entire box belongs to it.
-     */
     if (
-      items.length ===
-      1
+      items.length === 1
     ) {
       result.push({
         holder:
           items[0],
 
-        /*
-         * Exact percentage of
-         * displayed holder holdings.
-         */
         share:
-          items[0]
-            .balance /
+          items[0].balance /
           total,
 
         u0,
@@ -516,17 +776,12 @@ function buildTreemap(
       return;
     }
 
-    /*
-     * Divide holdings into two groups whose
-     * balances are as close to 50/50 as possible.
-     */
     const half =
       groupTotal / 2;
 
     let running = 0;
 
-    let splitIndex =
-      1;
+    let splitIndex = 1;
 
     let closest =
       Number.POSITIVE_INFINITY;
@@ -544,13 +799,11 @@ function buildTreemap(
 
       const distance =
         Math.abs(
-          running -
-            half
+          running - half
         );
 
       if (
-        distance <
-        closest
+        distance < closest
       ) {
         closest =
           distance;
@@ -586,23 +839,13 @@ function buildTreemap(
       firstTotal /
       groupTotal;
 
-    /*
-     * Split along the longer physical dimension
-     * to keep regions compact rather than strips.
-     */
     const physicalWidth =
-      (
-        u1 -
-        u0
-      ) *
+      (u1 - u0) *
       Math.PI *
       2;
 
     const physicalHeight =
-      (
-        s1 -
-        s0
-      ) * 2;
+      (s1 - s0) * 2;
 
     if (
       physicalWidth >=
@@ -610,10 +853,7 @@ function buildTreemap(
     ) {
       const cut =
         u0 +
-        (
-          u1 -
-          u0
-        ) *
+        (u1 - u0) *
           ratio;
 
       recurse(
@@ -634,10 +874,7 @@ function buildTreemap(
     } else {
       const cut =
         s0 +
-        (
-          s1 -
-          s0
-        ) *
+        (s1 - s0) *
           ratio;
 
       recurse(
@@ -676,12 +913,6 @@ function buildTreemap(
 function equalAreaToLatitude(
   s: number
 ) {
-  /*
-   * Equal-area latitude mapping.
-   *
-   * This is what makes each holder's conceptual
-   * surface area actually correspond to its %.
-   */
   const sinLatitude =
     clamp(
       s * 2 - 1,
@@ -768,16 +999,11 @@ function makeLabelTexture(
       "canvas"
     );
 
-  canvas.width =
-    1024;
-
-  canvas.height =
-    256;
+  canvas.width = 1024;
+  canvas.height = 256;
 
   const ctx =
-    canvas.getContext(
-      "2d"
-    );
+    canvas.getContext("2d");
 
   if (!ctx) {
     return null;
@@ -802,8 +1028,7 @@ function makeLabelTexture(
   ctx.shadowColor =
     "rgba(0,0,0,0.95)";
 
-  ctx.shadowBlur =
-    22;
+  ctx.shadowBlur = 22;
 
   ctx.fillStyle =
     "rgba(255,255,255,0.96)";
@@ -890,13 +1115,6 @@ function HolderLabel({
     return null;
   }
 
-  /*
-   * If the #1 displayed wallet has 20%
-   * and another has 5%, the second wallet
-   * gets 25% of its relative visual importance.
-   *
-   * sqrt is used because width AND height change.
-   */
   const relativeShare =
     territory.share /
     Math.max(
@@ -933,14 +1151,11 @@ function HolderLabel({
     );
 
   const height =
-    width *
-    0.25;
+    width * 0.25;
 
   return (
     <mesh
-      position={
-        position
-      }
+      position={position}
       quaternion={
         quaternion
       }
@@ -956,19 +1171,13 @@ function HolderLabel({
       <meshBasicMaterial
         map={texture}
         transparent
-        alphaTest={
-          0.03
-        }
+        alphaTest={0.03}
         depthTest
-        depthWrite={
-          false
-        }
+        depthWrite={false}
         side={
           THREE.DoubleSide
         }
-        toneMapped={
-          false
-        }
+        toneMapped={false}
       />
     </mesh>
   );
@@ -981,8 +1190,7 @@ function HolderLabel({
 function AutoSpin({
   children,
 }: {
-  children:
-    ReactNode;
+  children: ReactNode;
 }) {
   const group =
     useRef<THREE.Group>(
@@ -1006,19 +1214,9 @@ function AutoSpin({
       const t =
         elapsed.current;
 
-      /*
-       * Main rotation.
-       *
-       * Slow enough to read addresses,
-       * fast enough that all 100 holders
-       * naturally cycle into view.
-       */
       group.current.rotation.y =
         t * 0.115;
 
-      /*
-       * North / south precession.
-       */
       group.current.rotation.x =
         0.08 +
         Math.sin(
@@ -1026,9 +1224,6 @@ function AutoSpin({
         ) *
           0.82;
 
-      /*
-       * Small additional wobble.
-       */
       group.current.rotation.z =
         Math.sin(
           t * 0.057
@@ -1038,9 +1233,7 @@ function AutoSpin({
   );
 
   return (
-    <group
-      ref={group}
-    >
+    <group ref={group}>
       {children}
     </group>
   );
@@ -1061,21 +1254,16 @@ function ResponsiveCamera() {
       camera as THREE.PerspectiveCamera;
 
     const mobile =
-      size.width <
-      640;
+      size.width < 640;
 
     perspective.position.set(
       0,
       0,
-      mobile
-        ? 8.3
-        : 7.5
+      mobile ? 8.3 : 7.5
     );
 
     perspective.fov =
-      mobile
-        ? 44
-        : 38;
+      mobile ? 44 : 38;
 
     perspective.updateProjectionMatrix();
   }, [
@@ -1098,12 +1286,8 @@ function Moon({
   } = useThree();
 
   const mobile =
-    size.width <
-    640;
+    size.width < 640;
 
-  /*
-   * Only the first 100 holders ever participate.
-   */
   const territories =
     useMemo(
       () =>
@@ -1154,6 +1338,10 @@ function Moon({
     };
   }, [mobile]);
 
+  /*
+   * Geometry stays smooth.
+   * Only the surface art is 8-bit.
+   */
   const segments =
     mobile
       ? 96
@@ -1179,9 +1367,7 @@ function Moon({
             moonTexture ??
             undefined
           }
-          bumpScale={
-            0.04
-          }
+          bumpScale={0.025}
           roughness={1}
           metalness={0}
           color="#b6b6b6"
@@ -1226,17 +1412,14 @@ function SceneContent({
   } = useThree();
 
   const mobile =
-    size.width <
-    640;
+    size.width < 640;
 
   return (
     <>
       <ResponsiveCamera />
 
       <ambientLight
-        intensity={
-          0.08
-        }
+        intensity={0.08}
       />
 
       <directionalLight
@@ -1245,9 +1428,7 @@ function SceneContent({
           3,
           5,
         ]}
-        intensity={
-          3.15
-        }
+        intensity={3.15}
       />
 
       <directionalLight
@@ -1256,15 +1437,11 @@ function SceneContent({
           -1,
           -3,
         ]}
-        intensity={
-          0.12
-        }
+        intensity={0.12}
       />
 
       <Moon
-        holders={
-          holders
-        }
+        holders={holders}
       />
 
       <Stars
@@ -1282,9 +1459,7 @@ function SceneContent({
         }
         saturation={0}
         fade
-        speed={
-          0.025
-        }
+        speed={0.025}
       />
     </>
   );
@@ -1299,10 +1474,7 @@ export default function MoonScene({
 }: MoonSceneProps) {
   return (
     <Canvas
-      dpr={[
-        1,
-        1.6,
-      ]}
+      dpr={[1, 1.6]}
       camera={{
         position: [
           0,
@@ -1314,10 +1486,8 @@ export default function MoonScene({
         far: 100,
       }}
       gl={{
-        antialias:
-          true,
-        alpha:
-          false,
+        antialias: true,
+        alpha: false,
         powerPreference:
           "high-performance",
       }}
@@ -1330,9 +1500,7 @@ export default function MoonScene({
       />
 
       <SceneContent
-        holders={
-          holders
-        }
+        holders={holders}
       />
     </Canvas>
   );
