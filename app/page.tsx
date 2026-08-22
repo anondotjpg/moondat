@@ -1,69 +1,155 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import MoonScene from "./components/MoonScene";
+
+type Holder = {
+  address: string;
+  balance: number;
+};
+
+const TOKEN_MINT = "461C1ngHZtzTvMWT8gL7C2JLaYg2VQvaYj8aDFqhEni1";
+
+function abbreviateMint(address: string) {
+  if (address.length < 10) return address;
+
+  return `${address.slice(0, 5)}…${address.slice(-5)}`;
+}
 
 export default function Home() {
+  const [holders, setHolders] = useState<Holder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHolders() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const response = await fetch(
+          `/api/holders?mint=${encodeURIComponent(TOKEN_MINT)}`,
+          {
+            cache: "no-store",
+          }
+        );
+
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+
+          throw new Error(
+            body?.error || `Unable to load holders (${response.status})`
+          );
+        }
+
+        const data = await response.json();
+
+        if (!cancelled) {
+          setHolders(data.holders ?? []);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Unable to load holders."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadHolders();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const totalVisibleTokens = useMemo(() => {
+    return holders.reduce((total, holder) => total + holder.balance, 0);
+  }, [holders]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="relative h-dvh w-full overflow-hidden bg-black text-white">
+      <div className="absolute inset-0">
+        <MoonScene holders={holders} />
+      </div>
+
+      {/* Top-left */}
+      <div className="pointer-events-none absolute left-5 top-5 z-10 sm:left-8 sm:top-8">
+        <div className="flex items-center gap-2">
+          <div className="h-2 w-2 rounded-full bg-white" />
+
+          <span className="text-[11px] font-medium uppercase tracking-[0.24em] text-white/50">
+            Holder Moon
+          </span>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <h1 className="mt-3 text-xl font-medium tracking-tight sm:text-2xl">
+          Token holders
+        </h1>
+
+        <div className="mt-2 font-mono text-xs text-white/40">
+          {abbreviateMint(TOKEN_MINT)}
         </div>
-      </main>
-    </div>
+      </div>
+
+      {/* Top-right holder count */}
+      {!loading && !error && (
+        <div className="pointer-events-none absolute right-5 top-5 z-10 text-right sm:right-8 sm:top-8">
+          <div className="font-mono text-xl font-medium tabular-nums">
+            {holders.length.toLocaleString()}
+          </div>
+
+          <div className="mt-1 text-[10px] uppercase tracking-[0.18em] text-white/35">
+            holders above 1M
+          </div>
+        </div>
+      )}
+
+      {/* Loading */}
+      {loading && (
+        <div className="pointer-events-none absolute bottom-8 left-1/2 z-10 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/40 px-4 py-2 backdrop-blur-xl">
+            <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+
+            <span className="text-xs text-white/50">
+              Mapping holders...
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div className="absolute bottom-8 left-1/2 z-10 w-[calc(100%-40px)] max-w-md -translate-x-1/2 rounded-2xl border border-white/10 bg-black/70 p-4 text-center backdrop-blur-xl">
+          <p className="text-sm text-white/70">{error}</p>
+        </div>
+      )}
+
+      {/* Visible token amount */}
+      {!loading && !error && holders.length > 0 && (
+        <div className="pointer-events-none absolute bottom-5 left-5 z-10 sm:bottom-8 sm:left-8">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-white/30">
+            Visible holdings
+          </div>
+
+          <div className="mt-1 font-mono text-xs text-white/60">
+            {Math.round(totalVisibleTokens).toLocaleString()} tokens
+          </div>
+        </div>
+      )}
+
+      {/* Controls */}
+      <div className="pointer-events-none absolute bottom-5 right-5 z-10 text-right sm:bottom-8 sm:right-8">
+        <p className="text-[10px] uppercase tracking-[0.18em] text-white/25">
+          Drag to rotate
+        </p>
+      </div>
+    </main>
   );
 }
